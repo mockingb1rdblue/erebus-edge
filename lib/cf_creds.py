@@ -9,7 +9,7 @@ Usage:
 
 import os, sys, json, ctypes, ctypes.wintypes, getpass, pathlib
 
-CREDS_FILE = pathlib.Path(__file__).parent / "keys" / "cf_creds.dpapi"
+CREDS_FILE = pathlib.Path(__file__).parent.parent / "keys" / "cf_creds.dpapi"
 
 # ── Windows DPAPI via ctypes ──────────────────────────────────────────────────
 
