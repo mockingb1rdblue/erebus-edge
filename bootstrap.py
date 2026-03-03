@@ -843,13 +843,13 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
 def generate_installers(subdomain):
     """Generate self-contained installer scripts in keys/ (gitignored).
 
-    Generates 4 files:
-      keys/host_install.sh    — Mac + Linux host (machine being SSH'd into)
-      keys/host_install.bat   — Windows host (pure batch, no PowerShell)
-      keys/client_install.sh  — Mac + Linux client (machine connecting from)
-      keys/client_install.bat — Windows client (pure batch, no admin, no PowerShell)
+    Generates 4 files with self-documenting names:
+      keys/home_linux_mac.sh  — Run on home machine (Linux/Mac) — needs sudo
+      keys/home_windows.bat   — Run on home machine (Windows)   — needs admin
+      keys/work_linux_mac.sh  — Run on work machine (Linux/Mac) — no admin
+      keys/work_windows.bat   — Run on work machine (Windows)   — no admin
 
-    All Windows installers are pure .bat -- works when GPO/AppLocker blocks .ps1.
+    All Windows files are pure .bat -- works when GPO/AppLocker blocks .ps1.
     Token + SSH CA key are baked in — no arguments needed.
     """
     from config import get_config
@@ -867,14 +867,15 @@ def generate_installers(subdomain):
     generated = {}
 
     # ══════════════════════════════════════════════════════════════════════
-    #  HOST: Bash installer (Linux + macOS)
+    #  HOME machine: Bash installer (Linux + macOS)
     # ══════════════════════════════════════════════════════════════════════
     host_sh = f'''#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-#  erebus-edge HOST installer (auto-generated -- do not commit)
-#  For: Linux and macOS home machines
+#  erebus-edge -- HOME machine setup (auto-generated -- do not commit)
+#  Run this on the machine you want to SSH INTO (your home server).
+#  For: Linux and macOS
 #
-#  Run:  chmod +x host_install.sh && sudo ./host_install.sh
+#  Run:  chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -891,7 +892,7 @@ IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
 
 echo ""
 echo "  ================================================"
-echo "    erebus-edge -- Host Installer"
+echo "    erebus-edge -- Home Machine Setup (Linux/Mac)"
 echo "  ================================================"
 echo ""
 
@@ -1021,23 +1022,26 @@ fi
 
 echo ""
 echo "  ================================================"
-echo "    Done!  Host is ready."
+echo "    Done!  Home machine is ready."
 echo "  ================================================"
 echo ""
-echo "  Browser SSH : https://$SSH_HOST"
-echo "  Connects to : $(whoami)@$(hostname)"
+echo "  Now run the WORK machine installer on the machine"
+echo "  you connect FROM, then SSH via:"
+echo "    Browser : https://$SSH_HOST"
+echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
 echo ""
 '''
-    (keys_dir / "host_install.sh").write_text(host_sh)
-    generated["host_sh"] = keys_dir / "host_install.sh"
+    (keys_dir / "home_linux_mac.sh").write_text(host_sh)
+    generated["home_sh"] = keys_dir / "home_linux_mac.sh"
 
     # ══════════════════════════════════════════════════════════════════════
-    #  HOST: Batch installer (Windows) — pure .bat, no PowerShell needed
+    #  HOME machine: Batch installer (Windows) — pure .bat, no PowerShell
     # ══════════════════════════════════════════════════════════════════════
     host_bat = f'''@echo off
 setlocal enabledelayedexpansion
 REM ═══════════════════════════════════════════════════════════════════
-REM  erebus-edge HOST installer for Windows (auto-generated)
+REM  erebus-edge -- HOME machine setup for Windows (auto-generated)
+REM  Run this on the machine you want to SSH INTO (your home server).
 REM  Pure batch -- works even when PowerShell is blocked by GPO.
 REM
 REM  Right-click -> Run as Administrator
@@ -1049,7 +1053,7 @@ set "SSH_HOST={ssh_host}"
 
 echo.
 echo   ================================================
-echo     erebus-edge -- Host Installer (Windows)
+echo     erebus-edge -- Home Machine Setup (Windows)
 echo   ================================================
 echo.
 
@@ -1178,27 +1182,29 @@ if !errorlevel! equ 0 (
 
 echo.
 echo   ================================================
-echo     Done!  Host is ready.
+echo     Done!  Home machine is ready.
 echo   ================================================
 echo.
-echo   Browser SSH : https://%SSH_HOST%
-echo   Connects to : %USERNAME%@%COMPUTERNAME%
+echo   Now run the WORK machine installer on the machine
+echo   you connect FROM, then SSH via:
+echo     Browser : https://%SSH_HOST%
+echo     CLI     : ssh YOUR_USER@%SSH_HOST%
 echo.
 endlocal
 '''
-    (keys_dir / "host_install.bat").write_text(host_bat)
-    generated["host_bat"] = keys_dir / "host_install.bat"
+    (keys_dir / "home_windows.bat").write_text(host_bat)
+    generated["home_bat"] = keys_dir / "home_windows.bat"
 
     # ══════════════════════════════════════════════════════════════════════
-    #  CLIENT: Bash installer (Mac + Linux)
+    #  WORK machine: Bash installer (Mac + Linux)
     # ══════════════════════════════════════════════════════════════════════
     client_sh = f'''#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-#  erebus-edge CLIENT installer (auto-generated -- do not commit)
-#  For: Mac + Linux machines connecting TO a remote host
+#  erebus-edge -- WORK machine setup (auto-generated -- do not commit)
+#  Run this on the machine you connect FROM (your work/office machine).
+#  For: Linux and macOS.  No admin/sudo required.
 #
-#  Run:  chmod +x client_install.sh && ./client_install.sh
-#  No admin/sudo required.
+#  Run:  chmod +x work_linux_mac.sh && ./work_linux_mac.sh
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -1211,7 +1217,7 @@ info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
 
 echo ""
 echo "  ================================================"
-echo "    erebus-edge -- Client Installer"
+echo "    erebus-edge -- Work Machine Setup (Linux/Mac)"
 echo "  ================================================"
 echo ""
 
@@ -1280,31 +1286,30 @@ fi
 
 echo ""
 echo "  ================================================"
-echo "    Done!  Client is ready."
+echo "    Done!  Work machine is ready."
 echo "  ================================================"
 echo ""
-echo "  Browser SSH (zero install):"
-echo "    https://$SSH_HOST"
-echo ""
-echo "  CLI SSH:"
-echo "    ssh YOUR_USER@$SSH_HOST"
-echo "    $CONNECT"
+echo "  Connect to your home machine:"
+echo "    Browser : https://$SSH_HOST  (email OTP login)"
+echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+echo "    Script  : $CONNECT"
 echo ""
 '''
-    (keys_dir / "client_install.sh").write_text(client_sh)
-    generated["client_sh"] = keys_dir / "client_install.sh"
+    (keys_dir / "work_linux_mac.sh").write_text(client_sh)
+    generated["work_sh"] = keys_dir / "work_linux_mac.sh"
 
     # ══════════════════════════════════════════════════════════════════════
-    #  CLIENT: Batch installer (Windows — no admin, no PowerShell needed)
+    #  WORK machine: Batch installer (Windows — no admin, no PowerShell)
     # ══════════════════════════════════════════════════════════════════════
     client_bat = f'''@echo off
 setlocal enabledelayedexpansion
 REM ═══════════════════════════════════════════════════════════════════
-REM  erebus-edge CLIENT installer for Windows (auto-generated)
+REM  erebus-edge -- WORK machine setup for Windows (auto-generated)
+REM  Run this on the machine you connect FROM (your work/office machine).
 REM  Pure batch -- works even when PowerShell is blocked by GPO.
-REM  No admin needed. Downloads cloudflared to user directory.
+REM  No admin needed. Downloads cloudflared to your user directory.
 REM
-REM  Double-click or run:  client_install.bat
+REM  Double-click or run:  work_windows.bat
 REM ═══════════════════════════════════════════════════════════════════
 
 set "SSH_HOST={ssh_host}"
@@ -1312,7 +1317,7 @@ set "INSTALL_DIR=%LOCALAPPDATA%\\erebus-edge"
 
 echo.
 echo   ================================================
-echo     erebus-edge -- Client Installer (Windows)
+echo     erebus-edge -- Work Machine Setup (Windows)
 echo   ================================================
 echo.
 
@@ -1395,20 +1400,18 @@ echo   [..]  Connect with:  ssh YOUR_USER@%SSH_HOST%
 
 echo.
 echo   ================================================
-echo     Done!  Client is ready.
+echo     Done!  Work machine is ready.
 echo   ================================================
 echo.
-echo   Browser SSH (zero install):
-echo     https://%SSH_HOST%
-echo.
-echo   CLI SSH:
-echo     ssh YOUR_USER@%SSH_HOST%
-echo     %CONNECT%
+echo   Connect to your home machine:
+echo     Browser : https://%SSH_HOST%  (email OTP login)
+echo     CLI     : ssh YOUR_USER@%SSH_HOST%
+echo     Script  : %CONNECT%
 echo.
 endlocal
 '''
-    (keys_dir / "client_install.bat").write_text(client_bat)
-    generated["client_bat"] = keys_dir / "client_install.bat"
+    (keys_dir / "work_windows.bat").write_text(client_bat)
+    generated["work_bat"] = keys_dir / "work_windows.bat"
 
     for name, path in generated.items():
         ok(f"Generated: {path.name}")
@@ -1450,35 +1453,40 @@ def print_summary(subdomain, emails, tsnet_ok=False):
                   f"  {Y}[!!]{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
 
     if installers:
-        print(f"""  {G}{B}Standalone installers generated:{X}
+        print(f"""  {G}{B}What to do next:{X}
 
-    {C}HOST (machine being SSH'd into):{X}
-      Mac / Linux : {installers['host_sh']}
-        chmod +x host_install.sh && sudo ./host_install.sh
-      Windows     : {installers['host_bat']}
-        Right-click -> Run as Administrator
+  {C}STEP 1 -- Set up your HOME machine{X} (the one you SSH into)
+  Pick the file that matches your home machine's OS:
 
-    {C}CLIENT (machine connecting from):{X}
-      Mac / Linux : {installers['client_sh']}
-        chmod +x client_install.sh && ./client_install.sh
-      Windows     : {installers['client_bat']}
-        Double-click or run: client_install.bat
+    {Y}Linux / Mac:{X}  {installers['home_sh']}
+                  chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh
 
-    Pure .bat files -- no PowerShell needed (works when GPO blocks .ps1).
-    Host installers embed token + SSH CA key. No arguments needed.
-    Client installers need no admin. All files in keys/ (gitignored).
+    {Y}Windows:{X}      {installers['home_bat']}
+                  Right-click -> Run as Administrator
+
+  {C}STEP 2 -- Set up your WORK machine{X} (the one you connect from)
+  Pick the file that matches your work machine's OS:
+
+    {Y}Linux / Mac:{X}  {installers['work_sh']}
+                  chmod +x work_linux_mac.sh && ./work_linux_mac.sh
+
+    {Y}Windows:{X}      {installers['work_bat']}
+                  Double-click to run (no admin needed)
+
+  All files are in keys/ (gitignored). Token + SSH CA baked in.
+  Windows .bat files work even when GPO blocks PowerShell.
+
+  {C}STEP 3 -- Connect{X}
+    Browser : https://ssh.{subdomain}.workers.dev  (email OTP login)
+    CLI     : ssh YOUR_USER@ssh.{subdomain}.workers.dev
 """)
-    print(f"""  After running the installer:
+    else:
+        print(f"""  After setting up your home machine:
+    Browser : https://ssh.{subdomain}.workers.dev  (email OTP login)
+    CLI     : ssh YOUR_USER@ssh.{subdomain}.workers.dev
+""")
 
-  1. Browser SSH terminal:
-       https://ssh.{subdomain}.workers.dev
-     Authenticate via email OTP -> browser SSH session opens.
-
-  2. CLI SSH (cloudflared ProxyCommand):
-       connect.bat   (cmd)
-       ./connect.sh  (Git Bash)
-
-  3. Tailscale (works even without home-ssh):
+    print(f"""  Tailscale (optional, works independently):
 {tsnet_note}
      Peers:  bin\\tsnet.exe status
      SSH:    ssh -o "ProxyCommand=bin\\tsnet.exe proxy %h %p" user@peer
