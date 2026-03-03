@@ -2,14 +2,17 @@
 # =============================================================================
 # home_setup.sh  --  Set up Cloudflare Tunnel on your home Linux machine
 # =============================================================================
-# Run this ONCE on your home machine to install cloudflared and register the
-# tunnel.  After that, the tunnel starts automatically at boot via systemd.
+# Run this ONCE on your home machine.  For Mac/Windows, use home_setup.py.
+#
+# Usage:
+#   bash home_setup.sh <TUNNEL_TOKEN> [SSH_CA_PUBLIC_KEY]
+#
+#   Both values are printed by:  python bootstrap.py  (on your work machine)
 #
 # What this does:
 #   1. Installs cloudflared (if not already installed)
-#   2. Registers the pre-created tunnel using the token
-#   3. Installs a systemd service so the tunnel starts on boot
-#   4. Confirms SSH is reachable via ssh.mock1ng.workers.dev
+#   2. Registers cloudflared as a systemd service
+#   3. Optionally configures sshd to trust CF's SSH CA (short-lived certs)
 # =============================================================================
 
 set -euo pipefail
@@ -17,14 +20,12 @@ set -euo pipefail
 # ── Token: pass as first arg or env var ───────────────────────────────────────
 TUNNEL_TOKEN="${1:-${TUNNEL_TOKEN:-}}"
 if [[ -z "$TUNNEL_TOKEN" ]]; then
-    echo "Usage: bash home_setup.sh <TUNNEL_TOKEN>"
+    echo "Usage: bash home_setup.sh <TUNNEL_TOKEN> [SSH_CA_PUBLIC_KEY]"
     echo "  Token is printed by: python bootstrap.py  (on your work machine)"
     echo "  Or set env: TUNNEL_TOKEN=... bash home_setup.sh"
     exit 1
 fi
-SERVICE_NAME="cloudflared-home"
-TTYD_SERVICE="ttyd-portal"
-TTYD_PORT=7681
+SSH_CA_KEY="${2:-${SSH_CA_KEY:-}}"
 
 # ── colours ──────────────────────────────────────────────────────────────────
 GREEN='\033[0;32m'; YELLOW='\033[1;33m'; RED='\033[0;31m'; NC='\033[0m'
@@ -34,7 +35,7 @@ err()  { echo -e "${RED}[ERR]${NC}   $*"; }
 
 echo ""
 echo "=============================================="
-echo "  Cloudflare Tunnel + ttyd -- Home Setup"
+echo "  erebus-edge -- Home Setup (Linux)"
 echo "=============================================="
 echo ""
 
@@ -45,7 +46,6 @@ else
     info "Installing cloudflared..."
 
     if command -v apt-get &>/dev/null; then
-        # Debian / Ubuntu
         curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
             | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
         echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] \
@@ -56,7 +56,6 @@ https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
         ok "cloudflared installed via apt"
 
     elif command -v yum &>/dev/null || command -v dnf &>/dev/null; then
-        # RHEL / Fedora / CentOS
         PKG_MGR=$(command -v dnf || echo yum)
         sudo "$PKG_MGR" install -y yum-utils 2>/dev/null || true
         sudo "$PKG_MGR" config-manager --add-repo \
@@ -64,13 +63,7 @@ https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
         sudo "$PKG_MGR" install -y cloudflared
         ok "cloudflared installed via $PKG_MGR"
 
-    elif command -v brew &>/dev/null; then
-        # macOS
-        brew install cloudflare/cloudflare/cloudflared
-        ok "cloudflared installed via brew"
-
     else
-        # Fallback: direct binary download
         info "No package manager detected -- downloading binary directly"
         ARCH=$(uname -m)
         case "$ARCH" in
@@ -87,154 +80,69 @@ https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
     fi
 fi
 
-# ── 2. Make sure SSH is running on this machine ───────────────────────────────
-info "Checking SSH daemon..."
-if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
-    ok "SSH daemon is running"
+# ── 2. Install cloudflared service ────────────────────────────────────────────
+info "Installing cloudflared service..."
+if sudo cloudflared service install "$TUNNEL_TOKEN" 2>&1; then
+    ok "cloudflared service installed and started"
 else
-    err "SSH daemon does not appear to be running!"
-    echo "    Start it with:  sudo systemctl enable --now ssh"
-    echo "    (or 'sshd' on some distros)"
-    echo ""
-    read -rp "Continue anyway? [y/N] " CONT
-    [[ "$CONT" =~ ^[Yy]$ ]] || exit 1
-fi
-
-# ── 3. Install cloudflared as a systemd service ───────────────────────────────
-if systemctl is-active --quiet "$SERVICE_NAME" 2>/dev/null; then
-    ok "Tunnel service '$SERVICE_NAME' is already running"
-    info "To restart it:  sudo systemctl restart $SERVICE_NAME"
-elif systemctl list-unit-files | grep -q "$SERVICE_NAME"; then
-    info "Service exists but is not running -- starting it..."
-    sudo systemctl enable --now "$SERVICE_NAME"
-    ok "Service started"
-else
-    info "Installing tunnel as systemd service '$SERVICE_NAME'..."
-
-    # Write the service file manually so we can use a custom service name
-    # (cloudflared service install uses a fixed name 'cloudflared')
-    sudo tee /etc/systemd/system/${SERVICE_NAME}.service >/dev/null <<EOF
-[Unit]
-Description=Cloudflare Tunnel (home-ssh)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/bin/env cloudflared tunnel --no-autoupdate run --token ${TUNNEL_TOKEN}
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$SERVICE_NAME"
-    ok "Tunnel service installed and started"
-fi
-
-# ── 4. Install ttyd (web terminal) ───────────────────────────────────────────
-info "Setting up ttyd (web terminal, port ${TTYD_PORT})..."
-
-_install_ttyd_binary() {
-    local arch
-    arch=$(uname -m)
-    local ttyd_arch
-    case "$arch" in
-        x86_64)  ttyd_arch="x86_64" ;;
-        aarch64) ttyd_arch="aarch64" ;;
-        armv7*)  ttyd_arch="arm" ;;
-        *)       err "Unknown arch for ttyd binary: $arch"; return 1 ;;
-    esac
-    local ver="1.7.7"
-    local url="https://github.com/tsl0922/ttyd/releases/download/${ver}/ttyd.${ttyd_arch}"
-    info "Downloading ttyd ${ver} for ${ttyd_arch}..."
-    curl -fsSL -o /usr/local/bin/ttyd "$url"
-    chmod +x /usr/local/bin/ttyd
-    ok "ttyd ${ver} installed to /usr/local/bin/ttyd"
-}
-
-if command -v ttyd &>/dev/null; then
-    ok "ttyd already installed: $(ttyd --version 2>&1 | head -1)"
-elif command -v apt-get &>/dev/null; then
-    sudo apt-get install -y ttyd 2>/dev/null && ok "ttyd installed via apt" || _install_ttyd_binary
-elif command -v dnf &>/dev/null; then
-    sudo dnf install -y ttyd 2>/dev/null && ok "ttyd installed via dnf" || _install_ttyd_binary
-elif command -v yum &>/dev/null; then
-    sudo yum install -y ttyd 2>/dev/null && ok "ttyd installed via yum" || _install_ttyd_binary
-elif command -v brew &>/dev/null; then
-    brew install ttyd && ok "ttyd installed via brew"
-else
-    _install_ttyd_binary
-fi
-
-# ── 5. Install ttyd as a systemd service ─────────────────────────────────────
-if systemctl is-active --quiet "$TTYD_SERVICE" 2>/dev/null; then
-    ok "ttyd service '${TTYD_SERVICE}' is already running"
-elif systemctl list-unit-files | grep -q "$TTYD_SERVICE"; then
-    info "ttyd service exists but is not running -- starting it..."
-    sudo systemctl enable --now "$TTYD_SERVICE"
-    ok "ttyd service started"
-else
-    info "Installing ttyd as systemd service '${TTYD_SERVICE}'..."
-    TTYD_BIN=$(command -v ttyd)
-    CURRENT_USER=$(whoami)
-    sudo tee /etc/systemd/system/${TTYD_SERVICE}.service >/dev/null <<EOF
-[Unit]
-Description=ttyd Web Terminal (SSH Portal)
-After=network.target
-
-[Service]
-Type=simple
-User=${CURRENT_USER}
-ExecStart=${TTYD_BIN} -p ${TTYD_PORT} -i lo -t titleFixed=1 -t disableReconnect=1 tmux new-session -A -s work
-Restart=on-failure
-RestartSec=5s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    sudo systemctl daemon-reload
-    sudo systemctl enable --now "$TTYD_SERVICE"
-    ok "ttyd service installed and started on port ${TTYD_PORT}"
-fi
-
-# ── 6. Wait for tunnel to connect ─────────────────────────────────────────────
-info "Waiting for tunnel to connect (up to 15s)..."
-for i in $(seq 1 15); do
-    if cloudflared tunnel --credentials-file /dev/null info 2>/dev/null | grep -q "HEALTHY" 2>/dev/null; then
-        ok "Tunnel is HEALTHY"
-        break
+    # May already be installed
+    if systemctl is-active --quiet cloudflared 2>/dev/null; then
+        ok "cloudflared service already running"
+    else
+        info "Reinstalling service..."
+        sudo cloudflared service uninstall 2>/dev/null || true
+        sudo cloudflared service install "$TUNNEL_TOKEN"
+        ok "cloudflared service reinstalled"
     fi
-    sleep 1
-done
+fi
 
-# ── 7. Show status ────────────────────────────────────────────────────────────
-echo ""
-echo "----------------------------------------------"
-echo "  Service status"
-echo "----------------------------------------------"
-systemctl status "$SERVICE_NAME" --no-pager -l 2>/dev/null || true
-echo ""
-systemctl status "$TTYD_SERVICE" --no-pager -l 2>/dev/null || true
+# ── 3. SSH CA trust (short-lived certificates) ───────────────────────────────
+if [[ -n "$SSH_CA_KEY" ]]; then
+    info "Configuring sshd to trust CF SSH CA..."
+    CA_PATH="/etc/ssh/ca.pub"
+    echo "$SSH_CA_KEY" | sudo tee "$CA_PATH" >/dev/null
+    sudo chmod 600 "$CA_PATH"
+    ok "CA public key written to $CA_PATH"
 
+    if grep -q "TrustedUserCAKeys" /etc/ssh/sshd_config; then
+        ok "sshd_config already has TrustedUserCAKeys"
+    else
+        echo "" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        echo "# Cloudflare Access short-lived SSH certificates" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        echo "TrustedUserCAKeys $CA_PATH" | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        ok "TrustedUserCAKeys added to sshd_config"
+    fi
+
+    # Restart sshd
+    if sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null; then
+        ok "sshd restarted with CF CA trust"
+    else
+        err "Could not restart sshd -- restart manually"
+    fi
+else
+    info "No SSH CA key provided -- skipping short-lived cert setup"
+    info "Pass as second argument to enable: bash home_setup.sh TOKEN 'ecdsa-sha2...'"
+fi
+
+# ── 4. Verify ─────────────────────────────────────────────────────────────────
+info "Waiting for tunnel to connect (up to 10s)..."
+sleep 10
+if systemctl is-active --quiet cloudflared 2>/dev/null; then
+    ok "cloudflared service is running"
+else
+    err "cloudflared service does not appear to be running"
+    echo "    Check: sudo systemctl status cloudflared"
+fi
+
+# ── Done ──────────────────────────────────────────────────────────────────────
 echo ""
 echo "----------------------------------------------"
 echo "  Done!  Your home machine is ready."
 echo "----------------------------------------------"
 echo ""
-echo "  Services running:"
-echo "    cloudflared  -- CF Tunnel (SSH + web terminal)"
-echo "    ttyd         -- Web terminal on localhost:${TTYD_PORT}"
-echo ""
-echo "  From your work machine (browser):"
-echo "    https://portal.mock1ng.workers.dev   (portal PWA)"
-echo "    https://term.mock1ng.workers.dev     (web terminal)"
-echo ""
-echo "  From your work machine (CLI SSH):"
-echo "    connect.bat    (Windows cmd)"
-echo "    ./connect.sh   (Git Bash)"
+echo "  From your work machine:"
+echo "    Browser SSH  : https://ssh.SUB.workers.dev"
+echo "    CLI SSH      : connect.bat / ./connect.sh"
 echo ""
 echo "  This connects you to: $(whoami)@$(hostname)"
 echo ""
