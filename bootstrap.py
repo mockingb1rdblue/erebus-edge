@@ -838,13 +838,18 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
     ok(f"cf_config.txt updated: CF_HOST={ssh_host}")
 
 # ═════════════════════════════════════════════════════════════════════════════
-#  Generate standalone home installers
+#  Generate standalone installers (host + client, all platforms)
 # ═════════════════════════════════════════════════════════════════════════════
-def generate_home_installers(subdomain):
+def generate_installers(subdomain):
     """Generate self-contained installer scripts in keys/ (gitignored).
 
-    These have the tunnel token + SSH CA key baked in so the home machine
-    user just copies one file and runs it — no Python, no repo, no arguments.
+    Generates 4 files:
+      keys/host_install.sh   — Mac + Linux host (machine being SSH'd into)
+      keys/host_install.ps1  — Windows host
+      keys/client_install.sh — Mac + Linux client (machine connecting from)
+      keys/client_install.ps1— Windows client (portable, no admin)
+
+    Token + SSH CA key are baked in — no arguments needed.
     """
     from config import get_config
     cfg = get_config()
@@ -854,21 +859,21 @@ def generate_home_installers(subdomain):
 
     if not tunnel_tok:
         warn("No tunnel token in config -- cannot generate installers")
-        return
+        return None
 
-    # ── Bash installer (Linux + macOS) ────────────────────────────────────
-    bash_script = f'''#!/usr/bin/env bash
+    keys_dir = SCRIPT_DIR / "keys"
+    keys_dir.mkdir(exist_ok=True)
+    generated = {}
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  HOST: Bash installer (Linux + macOS)
+    # ══════════════════════════════════════════════════════════════════════
+    host_sh = f'''#!/usr/bin/env bash
 # ═══════════════════════════════════════════════════════════════════
-#  erebus-edge home installer (auto-generated — do not commit)
+#  erebus-edge HOST installer (auto-generated -- do not commit)
+#  For: Linux and macOS home machines
 #
-#  Run on your home machine:
-#    chmod +x home_install.sh && sudo ./home_install.sh
-#
-#  What this does:
-#    1. Downloads + installs cloudflared
-#    2. Registers cloudflared as a system service (systemd / launchd)
-#    3. Configures sshd to trust CF short-lived SSH certificates
-#    4. Restarts sshd
+#  Run:  chmod +x host_install.sh && sudo ./host_install.sh
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -881,139 +886,184 @@ ok()   {{ echo -e "${{G}}[OK]${{X}}   $*"; }}
 info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
 err()  {{ echo -e "${{R}}[!!]${{X}}   $*" >&2; }}
 
+IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
+
 echo ""
 echo "  ================================================"
-echo "    erebus-edge -- Home Machine Installer"
+echo "    erebus-edge -- Host Installer"
 echo "  ================================================"
 echo ""
 
-# ── 1. Install cloudflared ────────────────────────────────────────────
+# ── 1. Ensure SSH server is running ───────────────────────────────
+if $IS_MAC; then
+    # macOS: check Remote Login
+    if systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
+        ok "Remote Login (SSH) is enabled"
+    else
+        info "Enabling Remote Login (SSH)..."
+        sudo systemsetup -setremotelogin on 2>/dev/null || {{
+            err "Could not enable Remote Login automatically"
+            err "Enable manually: System Settings -> General -> Sharing -> Remote Login"
+        }}
+    fi
+else
+    # Linux: check sshd
+    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+        ok "SSH server is running"
+    else
+        info "Starting SSH server..."
+        sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || {{
+            err "Could not start sshd. Install: sudo apt install openssh-server"
+        }}
+    fi
+fi
+
+# ── 2. Install cloudflared ────────────────────────────────────────
 if command -v cloudflared &>/dev/null; then
     ok "cloudflared already installed"
 else
     info "Installing cloudflared..."
-    OS=$(uname -s | tr A-Z a-z)
     ARCH=$(uname -m)
     case "$ARCH" in
-        x86_64)  CF_ARCH="amd64" ;;
+        x86_64)        CF_ARCH="amd64" ;;
         aarch64|arm64) CF_ARCH="arm64" ;;
-        armv7*)  CF_ARCH="arm" ;;
-        *)       err "Unknown arch: $ARCH"; exit 1 ;;
+        armv7*)        CF_ARCH="arm" ;;
+        *)             err "Unknown arch: $ARCH"; exit 1 ;;
     esac
-
-    if [[ "$OS" == "darwin" ]]; then
-        # macOS: try brew first, fallback to binary
+    if $IS_MAC; then
         if command -v brew &>/dev/null; then
-            brew install cloudflare/cloudflare/cloudflared && ok "Installed via brew" || true
+            brew install cloudflare/cloudflare/cloudflared 2>/dev/null && ok "Installed via brew" || true
         fi
         if ! command -v cloudflared &>/dev/null; then
             curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${{CF_ARCH}}.tgz" -o /tmp/cf.tgz
-            tar xzf /tmp/cf.tgz -C /usr/local/bin/ cloudflared
-            chmod +x /usr/local/bin/cloudflared
+            tar xzf /tmp/cf.tgz -C /usr/local/bin/ cloudflared 2>/dev/null || tar xzf /tmp/cf.tgz -C /tmp/ && sudo mv /tmp/cloudflared /usr/local/bin/
+            sudo chmod +x /usr/local/bin/cloudflared
             rm -f /tmp/cf.tgz
             ok "cloudflared binary installed"
         fi
     else
-        # Linux: try package manager, fallback to binary
         if command -v apt-get &>/dev/null; then
             curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
             echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \\
                 | sudo tee /etc/apt/sources.list.d/cloudflared.list
-            sudo apt-get update -qq && sudo apt-get install -y cloudflared && ok "Installed via apt"
+            sudo apt-get update -qq && sudo apt-get install -y cloudflared 2>/dev/null && ok "Installed via apt"
         elif command -v dnf &>/dev/null; then
             sudo dnf install -y cloudflared 2>/dev/null && ok "Installed via dnf"
         fi
         if ! command -v cloudflared &>/dev/null; then
-            curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" \\
+            sudo curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" \\
                 -o /usr/local/bin/cloudflared
-            chmod +x /usr/local/bin/cloudflared
+            sudo chmod +x /usr/local/bin/cloudflared
             ok "cloudflared binary installed"
         fi
     fi
 fi
 
-# ── 2. Register service ───────────────────────────────────────────────
-info "Installing cloudflared service..."
+# ── 3. Register tunnel service ────────────────────────────────────
+info "Installing cloudflared tunnel service..."
 if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
-    ok "Service installed"
+    ok "Tunnel service installed and started"
 else
-    if pgrep -x cloudflared &>/dev/null || systemctl is-active --quiet cloudflared 2>/dev/null; then
-        ok "Service already running"
+    if pgrep -x cloudflared &>/dev/null; then
         info "Reinstalling with current token..."
         sudo cloudflared service uninstall 2>/dev/null || true
         sudo cloudflared service install "$TOKEN"
         ok "Service reinstalled"
     else
-        err "Service install failed -- check cloudflared logs"
+        err "Service install failed"
     fi
 fi
 
-# ── 3. SSH CA trust ───────────────────────────────────────────────────
+# ── 4. SSH CA trust (short-lived certificates) ────────────────────
 if [[ -n "$SSH_CA_KEY" ]]; then
     info "Configuring sshd to trust CF SSH CA..."
-    echo "$SSH_CA_KEY" | sudo tee /etc/ssh/ca.pub >/dev/null
-    sudo chmod 600 /etc/ssh/ca.pub
-    ok "CA key written to /etc/ssh/ca.pub"
+    if $IS_MAC; then
+        CA_PATH="/etc/ssh/ca.pub"
+        SSHD_CFG="/etc/ssh/sshd_config"
+    else
+        CA_PATH="/etc/ssh/ca.pub"
+        SSHD_CFG="/etc/ssh/sshd_config"
+    fi
+    echo "$SSH_CA_KEY" | sudo tee "$CA_PATH" >/dev/null
+    sudo chmod 600 "$CA_PATH"
+    ok "CA key written to $CA_PATH"
 
-    if grep -q "TrustedUserCAKeys" /etc/ssh/sshd_config 2>/dev/null; then
+    if grep -q "TrustedUserCAKeys" "$SSHD_CFG" 2>/dev/null; then
         ok "sshd_config already has TrustedUserCAKeys"
     else
-        printf '\\n# Cloudflare Access short-lived SSH certificates\\nTrustedUserCAKeys /etc/ssh/ca.pub\\n' \\
-            | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        printf '\\n# Cloudflare Access short-lived SSH certificates\\nTrustedUserCAKeys %s\\n' "$CA_PATH" \\
+            | sudo tee -a "$SSHD_CFG" >/dev/null
         ok "TrustedUserCAKeys added to sshd_config"
     fi
 
-    if sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null; then
-        ok "sshd restarted"
-    elif [[ "$(uname -s)" == "Darwin" ]]; then
+    # Restart sshd
+    if $IS_MAC; then
         sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
         sudo launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
         ok "sshd restarted (launchd)"
+    else
+        sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null
+        ok "sshd restarted"
     fi
 else
     info "No SSH CA key -- short-lived certs not configured"
 fi
 
-# ── 4. Verify ─────────────────────────────────────────────────────────
+# ── 5. Verify ─────────────────────────────────────────────────────
 info "Waiting for tunnel..."
 sleep 5
-if pgrep -x cloudflared &>/dev/null || systemctl is-active --quiet cloudflared 2>/dev/null; then
+if pgrep -x cloudflared &>/dev/null; then
     ok "cloudflared is running"
 else
-    err "cloudflared does not appear to be running"
+    err "cloudflared may not be running -- check: sudo systemctl status cloudflared"
 fi
 
 echo ""
 echo "  ================================================"
-echo "    Done!  Home machine is ready."
+echo "    Done!  Host is ready."
 echo "  ================================================"
 echo ""
 echo "  Browser SSH : https://$SSH_HOST"
-echo "  CLI SSH     : connect.bat / ./connect.sh"
 echo "  Connects to : $(whoami)@$(hostname)"
 echo ""
 '''
+    (keys_dir / "host_install.sh").write_text(host_sh)
+    generated["host_sh"] = keys_dir / "host_install.sh"
 
-    # ── PowerShell installer (Windows) ────────────────────────────────────
-    ps_script = f'''# ═══════════════════════════════════════════════════════════════════
-#  erebus-edge home installer for Windows (auto-generated)
-#
-#  Run in PowerShell (as Administrator for service install):
-#    .\\home_install.ps1
+    # ══════════════════════════════════════════════════════════════════════
+    #  HOST: PowerShell installer (Windows)
+    # ══════════════════════════════════════════════════════════════════════
+    host_ps = f'''# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge HOST installer for Windows (auto-generated)
+#  Run as Administrator:
+#    powershell -ExecutionPolicy Bypass -File host_install.ps1
 # ═══════════════════════════════════════════════════════════════════
 $ErrorActionPreference = "Stop"
-
-$TOKEN    = "{tunnel_tok}"
-$SSH_HOST = "{ssh_host}"
+$TOKEN      = "{tunnel_tok}"
+$SSH_CA_KEY = "{ssh_ca_key}"
+$SSH_HOST   = "{ssh_host}"
 
 Write-Host ""
 Write-Host "  ================================================"
-Write-Host "    erebus-edge -- Home Machine Installer"
+Write-Host "    erebus-edge -- Host Installer (Windows)"
 Write-Host "  ================================================"
 Write-Host ""
 
-# ── 1. Download cloudflared ───────────────────────────────────────
-$cfPath = "$env:LOCALAPPDATA\\cloudflared\\cloudflared.exe"
+# ── 1. Ensure OpenSSH Server is installed + running ───────────────
+$sshCap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" 2>$null
+if ($sshCap -and $sshCap.State -ne "Installed") {{
+    Write-Host "  [..]  Installing OpenSSH Server..."
+    Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
+    Write-Host "  [OK]  OpenSSH Server installed"
+}} else {{
+    Write-Host "  [OK]  OpenSSH Server present"
+}}
+Start-Service sshd -ErrorAction SilentlyContinue
+Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
+Write-Host "  [OK]  sshd service running (auto-start enabled)"
+
+# ── 2. Download cloudflared ───────────────────────────────────────
+$cfPath = "$env:ProgramFiles\\cloudflared\\cloudflared.exe"
 if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
     Write-Host "  [OK]  cloudflared already installed"
     $cfPath = (Get-Command cloudflared).Source
@@ -1028,44 +1078,258 @@ if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
     Write-Host "  [OK]  cloudflared downloaded to $cfPath"
 }}
 
-# ── 2. Install service ───────────────────────────────────────────
-Write-Host "  [..]  Installing cloudflared service..."
+# ── 3. Install tunnel service ────────────────────────────────────
+Write-Host "  [..]  Installing cloudflared tunnel service..."
 $r = Start-Process -FilePath $cfPath -ArgumentList "service","install",$TOKEN `
      -Wait -PassThru -NoNewWindow 2>$null
 if ($r.ExitCode -eq 0) {{
     Write-Host "  [OK]  cloudflared service installed"
 }} else {{
-    Write-Host "  [!!]  Service install may need admin. Starting in background..."
-    Start-Process -FilePath $cfPath `
-        -ArgumentList "tunnel","--no-autoupdate","run","--token",$TOKEN `
-        -WindowStyle Hidden
-    Write-Host "  [OK]  cloudflared started (run as admin for persistent service)"
+    # May already be installed -- try uninstall + reinstall
+    Start-Process -FilePath $cfPath -ArgumentList "service","uninstall" -Wait -NoNewWindow 2>$null
+    $r2 = Start-Process -FilePath $cfPath -ArgumentList "service","install",$TOKEN `
+          -Wait -PassThru -NoNewWindow 2>$null
+    if ($r2.ExitCode -eq 0) {{
+        Write-Host "  [OK]  cloudflared service reinstalled"
+    }} else {{
+        Write-Host "  [!!]  Service install failed -- ensure running as Administrator"
+    }}
 }}
 
-# ── 3. Done ───────────────────────────────────────────────────────
+# ── 4. SSH CA trust (short-lived certificates) ────────────────────
+if ($SSH_CA_KEY) {{
+    Write-Host "  [..]  Configuring sshd to trust CF SSH CA..."
+    $sshDir  = "$env:ProgramData\\ssh"
+    $caPath  = "$sshDir\\ca.pub"
+    $cfgPath = "$sshDir\\sshd_config"
+
+    Set-Content -Path $caPath -Value $SSH_CA_KEY -Force
+    Write-Host "  [OK]  CA key written to $caPath"
+
+    $cfg = Get-Content $cfgPath -Raw -ErrorAction SilentlyContinue
+    if ($cfg -and $cfg -notmatch "TrustedUserCAKeys") {{
+        Add-Content -Path $cfgPath -Value "`n# Cloudflare Access short-lived SSH certificates`nTrustedUserCAKeys $caPath"
+        Write-Host "  [OK]  TrustedUserCAKeys added to sshd_config"
+    }} elseif ($cfg -match "TrustedUserCAKeys") {{
+        Write-Host "  [OK]  sshd_config already has TrustedUserCAKeys"
+    }}
+
+    Restart-Service sshd -ErrorAction SilentlyContinue
+    Write-Host "  [OK]  sshd restarted with CF CA trust"
+}} else {{
+    Write-Host "  [..]  No SSH CA key -- short-lived certs not configured"
+}}
+
+# ── 5. Verify ─────────────────────────────────────────────────────
 Start-Sleep -Seconds 5
+if (Get-Service cloudflared -ErrorAction SilentlyContinue | Where-Object Status -eq Running) {{
+    Write-Host "  [OK]  cloudflared is running"
+}} else {{
+    Write-Host "  [!!]  cloudflared may not be running -- check: Get-Service cloudflared"
+}}
+
 Write-Host ""
 Write-Host "  ================================================"
-Write-Host "    Done!  Home machine is ready."
+Write-Host "    Done!  Host is ready."
 Write-Host "  ================================================"
 Write-Host ""
 Write-Host "  Browser SSH : https://$SSH_HOST"
-Write-Host "  CLI SSH     : connect.bat / ./connect.sh"
+Write-Host "  Connects to : $env:USERNAME@$env:COMPUTERNAME"
 Write-Host ""
 '''
+    (keys_dir / "host_install.ps1").write_text(host_ps)
+    generated["host_ps"] = keys_dir / "host_install.ps1"
 
-    keys_dir = SCRIPT_DIR / "keys"
-    keys_dir.mkdir(exist_ok=True)
+    # ══════════════════════════════════════════════════════════════════════
+    #  CLIENT: Bash installer (Mac + Linux)
+    # ══════════════════════════════════════════════════════════════════════
+    client_sh = f'''#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge CLIENT installer (auto-generated -- do not commit)
+#  For: Mac + Linux machines connecting TO a remote host
+#
+#  Run:  chmod +x client_install.sh && ./client_install.sh
+#  No admin/sudo required.
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
 
-    sh_path = keys_dir / "home_install.sh"
-    sh_path.write_text(bash_script)
-    ok(f"Generated: {sh_path}")
+SSH_HOST="{ssh_host}"
+INSTALL_DIR="${{HOME}}/.erebus-edge"
 
-    ps_path = keys_dir / "home_install.ps1"
-    ps_path.write_text(ps_script)
-    ok(f"Generated: {ps_path}")
+G='\\033[0;32m'; Y='\\033[1;33m'; X='\\033[0m'
+ok()   {{ echo -e "${{G}}[OK]${{X}}   $*"; }}
+info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
 
-    return sh_path, ps_path
+echo ""
+echo "  ================================================"
+echo "    erebus-edge -- Client Installer"
+echo "  ================================================"
+echo ""
+
+mkdir -p "$INSTALL_DIR"
+
+# ── 1. Download cloudflared (portable, no admin) ──────────────────
+CF_BIN="$INSTALL_DIR/cloudflared"
+if command -v cloudflared &>/dev/null; then
+    ok "cloudflared already in PATH"
+    CF_BIN=$(command -v cloudflared)
+elif [[ -x "$CF_BIN" ]]; then
+    ok "cloudflared already at $CF_BIN"
+else
+    ARCH=$(uname -m)
+    OS=$(uname -s | tr A-Z a-z)
+    case "$ARCH" in
+        x86_64)        CF_ARCH="amd64" ;;
+        aarch64|arm64) CF_ARCH="arm64" ;;
+        armv7*)        CF_ARCH="arm" ;;
+        *)             CF_ARCH="amd64" ;;
+    esac
+    if [[ "$OS" == "darwin" ]]; then
+        info "Downloading cloudflared for macOS ($CF_ARCH)..."
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${{CF_ARCH}}.tgz" -o /tmp/cf.tgz
+        tar xzf /tmp/cf.tgz -C "$INSTALL_DIR/"
+        rm -f /tmp/cf.tgz
+    else
+        info "Downloading cloudflared for Linux ($CF_ARCH)..."
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" -o "$CF_BIN"
+    fi
+    chmod +x "$CF_BIN"
+    ok "cloudflared installed to $CF_BIN"
+fi
+
+# ── 2. Create connect script ─────────────────────────────────────
+CONNECT="$INSTALL_DIR/connect.sh"
+cat > "$CONNECT" << 'SCRIPT'
+#!/usr/bin/env bash
+SSH_HOST="__SSH_HOST__"
+CF_BIN="__CF_BIN__"
+read -rp "  Username on remote host: " USER
+ssh -o "ProxyCommand=$CF_BIN access ssh --hostname $SSH_HOST" "$USER@$SSH_HOST"
+SCRIPT
+sed -i.bak "s|__SSH_HOST__|$SSH_HOST|g; s|__CF_BIN__|$CF_BIN|g" "$CONNECT" && rm -f "${{CONNECT}}.bak"
+chmod +x "$CONNECT"
+ok "Created $CONNECT"
+
+# ── 3. SSH config entry ──────────────────────────────────────────
+SSH_CFG="$HOME/.ssh/config"
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+if grep -q "$SSH_HOST" "$SSH_CFG" 2>/dev/null; then
+    ok "SSH config already has $SSH_HOST entry"
+else
+    cat >> "$SSH_CFG" << EOF
+
+# erebus-edge -- CF Tunnel SSH
+Host $SSH_HOST
+    ProxyCommand $CF_BIN access ssh --hostname %h
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+    chmod 600 "$SSH_CFG"
+    ok "Added SSH config entry for $SSH_HOST"
+    info "Connect with:  ssh YOUR_USER@$SSH_HOST"
+fi
+
+echo ""
+echo "  ================================================"
+echo "    Done!  Client is ready."
+echo "  ================================================"
+echo ""
+echo "  Browser SSH (zero install):"
+echo "    https://$SSH_HOST"
+echo ""
+echo "  CLI SSH:"
+echo "    ssh YOUR_USER@$SSH_HOST"
+echo "    $CONNECT"
+echo ""
+'''
+    (keys_dir / "client_install.sh").write_text(client_sh)
+    generated["client_sh"] = keys_dir / "client_install.sh"
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  CLIENT: PowerShell/Batch installer (Windows — no admin needed)
+    # ══════════════════════════════════════════════════════════════════════
+    client_ps = f'''# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge CLIENT installer for Windows (auto-generated)
+#  No admin needed. Downloads cloudflared to user directory.
+#
+#  Run:  powershell -ExecutionPolicy Bypass -File client_install.ps1
+# ═══════════════════════════════════════════════════════════════════
+$SSH_HOST   = "{ssh_host}"
+$InstallDir = "$env:LOCALAPPDATA\\erebus-edge"
+
+Write-Host ""
+Write-Host "  ================================================"
+Write-Host "    erebus-edge -- Client Installer (Windows)"
+Write-Host "  ================================================"
+Write-Host ""
+
+New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+
+# ── 1. Download cloudflared (portable, no admin) ──────────────────
+$cfPath = "$InstallDir\\cloudflared.exe"
+if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
+    Write-Host "  [OK]  cloudflared already in PATH"
+    $cfPath = (Get-Command cloudflared).Source
+}} elseif (Test-Path $cfPath) {{
+    Write-Host "  [OK]  cloudflared already at $cfPath"
+}} else {{
+    Write-Host "  [..]  Downloading cloudflared..."
+    $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $cfPath -UseBasicParsing
+    Write-Host "  [OK]  cloudflared downloaded to $cfPath"
+}}
+
+# ── 2. Create connect.bat ─────────────────────────────────────────
+$bat = "$InstallDir\\connect.bat"
+@"
+@echo off
+set /p USER=Username on remote host:
+"$cfPath" access ssh --hostname $SSH_HOST
+ssh -o "ProxyCommand=""$cfPath"" access ssh --hostname $SSH_HOST" %USER%@$SSH_HOST
+"@ | Set-Content -Path $bat -Encoding ASCII
+Write-Host "  [OK]  Created $bat"
+
+# ── 3. SSH config entry ──────────────────────────────────────────
+$sshDir = "$env:USERPROFILE\\.ssh"
+$sshCfg = "$sshDir\\config"
+New-Item -ItemType Directory -Force -Path $sshDir -ErrorAction SilentlyContinue | Out-Null
+$entry = @"
+
+# erebus-edge -- CF Tunnel SSH
+Host $SSH_HOST
+    ProxyCommand "$cfPath" access ssh --hostname %h
+    StrictHostKeyChecking no
+    UserKnownHostsFile NUL
+"@
+if ((Test-Path $sshCfg) -and (Select-String -Path $sshCfg -Pattern $SSH_HOST -Quiet)) {{
+    Write-Host "  [OK]  SSH config already has $SSH_HOST entry"
+}} else {{
+    Add-Content -Path $sshCfg -Value $entry
+    Write-Host "  [OK]  Added SSH config entry for $SSH_HOST"
+    Write-Host "  [..]  Connect with:  ssh YOUR_USER@$SSH_HOST"
+}}
+
+Write-Host ""
+Write-Host "  ================================================"
+Write-Host "    Done!  Client is ready."
+Write-Host "  ================================================"
+Write-Host ""
+Write-Host "  Browser SSH (zero install):"
+Write-Host "    https://$SSH_HOST"
+Write-Host ""
+Write-Host "  CLI SSH:"
+Write-Host "    ssh YOUR_USER@$SSH_HOST"
+Write-Host "    $bat"
+Write-Host ""
+'''
+    (keys_dir / "client_install.ps1").write_text(client_ps)
+    generated["client_ps"] = keys_dir / "client_install.ps1"
+
+    for name, path in generated.items():
+        ok(f"Generated: {path.name}")
+
+    return generated
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1080,7 +1344,7 @@ def print_summary(subdomain, emails, tsnet_ok=False):
     # Generate standalone installers
     installers = None
     if tunnel_tok:
-        installers = generate_home_installers(subdomain)
+        installers = generate_installers(subdomain)
 
     print(f"\n{'═'*58}")
     print(f"  {G}{B}Bootstrap complete!{X}")
@@ -1102,19 +1366,22 @@ def print_summary(subdomain, emails, tsnet_ok=False):
                   f"  {Y}[!!]{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
 
     if installers:
-        sh_path, ps_path = installers
-        print(f"""  {G}{B}Home machine installers generated:{X}
+        print(f"""  {G}{B}Standalone installers generated:{X}
 
-    {C}Mac / Linux:{X}
-      Copy {sh_path} to your home machine, then:
-        chmod +x home_install.sh && sudo ./home_install.sh
+    {C}HOST (machine being SSH'd into):{X}
+      Mac / Linux : {installers['host_sh']}
+        chmod +x host_install.sh && sudo ./host_install.sh
+      Windows     : {installers['host_ps']}
+        powershell -ExecutionPolicy Bypass -File host_install.ps1
 
-    {C}Windows:{X}
-      Copy {ps_path} to your home machine, then:
-        powershell -ExecutionPolicy Bypass -File home_install.ps1
+    {C}CLIENT (machine connecting from):{X}
+      Mac / Linux : {installers['client_sh']}
+        chmod +x client_install.sh && ./client_install.sh
+      Windows     : {installers['client_ps']}
+        powershell -ExecutionPolicy Bypass -File client_install.ps1
 
-    These are standalone -- no Python, no repo clone, no arguments needed.
-    Token + SSH CA key are embedded. Files are in keys/ (gitignored).
+    Host installers embed token + SSH CA key. No arguments needed.
+    Client installers need no admin. All files in keys/ (gitignored).
 """)
     print(f"""  After running the installer:
 
