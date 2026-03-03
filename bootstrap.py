@@ -844,11 +844,12 @@ def generate_installers(subdomain):
     """Generate self-contained installer scripts in keys/ (gitignored).
 
     Generates 4 files:
-      keys/host_install.sh   — Mac + Linux host (machine being SSH'd into)
-      keys/host_install.ps1  — Windows host
-      keys/client_install.sh — Mac + Linux client (machine connecting from)
-      keys/client_install.ps1— Windows client (portable, no admin)
+      keys/host_install.sh    — Mac + Linux host (machine being SSH'd into)
+      keys/host_install.bat   — Windows host (pure batch, no PowerShell)
+      keys/client_install.sh  — Mac + Linux client (machine connecting from)
+      keys/client_install.bat — Windows client (pure batch, no admin, no PowerShell)
 
+    All Windows installers are pure .bat -- works when GPO/AppLocker blocks .ps1.
     Token + SSH CA key are baked in — no arguments needed.
     """
     from config import get_config
@@ -1031,114 +1032,162 @@ echo ""
     generated["host_sh"] = keys_dir / "host_install.sh"
 
     # ══════════════════════════════════════════════════════════════════════
-    #  HOST: PowerShell installer (Windows)
+    #  HOST: Batch installer (Windows) — pure .bat, no PowerShell needed
     # ══════════════════════════════════════════════════════════════════════
-    host_ps = f'''# ═══════════════════════════════════════════════════════════════════
-#  erebus-edge HOST installer for Windows (auto-generated)
-#  Run as Administrator:
-#    powershell -ExecutionPolicy Bypass -File host_install.ps1
-# ═══════════════════════════════════════════════════════════════════
-$ErrorActionPreference = "Stop"
-$TOKEN      = "{tunnel_tok}"
-$SSH_CA_KEY = "{ssh_ca_key}"
-$SSH_HOST   = "{ssh_host}"
+    host_bat = f'''@echo off
+setlocal enabledelayedexpansion
+REM ═══════════════════════════════════════════════════════════════════
+REM  erebus-edge HOST installer for Windows (auto-generated)
+REM  Pure batch -- works even when PowerShell is blocked by GPO.
+REM
+REM  Right-click -> Run as Administrator
+REM ═══════════════════════════════════════════════════════════════════
 
-Write-Host ""
-Write-Host "  ================================================"
-Write-Host "    erebus-edge -- Host Installer (Windows)"
-Write-Host "  ================================================"
-Write-Host ""
+set "TOKEN={tunnel_tok}"
+set "SSH_CA_KEY={ssh_ca_key}"
+set "SSH_HOST={ssh_host}"
 
-# ── 1. Ensure OpenSSH Server is installed + running ───────────────
-$sshCap = Get-WindowsCapability -Online -Name "OpenSSH.Server*" 2>$null
-if ($sshCap -and $sshCap.State -ne "Installed") {{
-    Write-Host "  [..]  Installing OpenSSH Server..."
-    Add-WindowsCapability -Online -Name "OpenSSH.Server~~~~0.0.1.0" | Out-Null
-    Write-Host "  [OK]  OpenSSH Server installed"
-}} else {{
-    Write-Host "  [OK]  OpenSSH Server present"
-}}
-Start-Service sshd -ErrorAction SilentlyContinue
-Set-Service -Name sshd -StartupType Automatic -ErrorAction SilentlyContinue
-Write-Host "  [OK]  sshd service running (auto-start enabled)"
+echo.
+echo   ================================================
+echo     erebus-edge -- Host Installer (Windows)
+echo   ================================================
+echo.
 
-# ── 2. Download cloudflared ───────────────────────────────────────
-$cfPath = "$env:ProgramFiles\\cloudflared\\cloudflared.exe"
-if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
-    Write-Host "  [OK]  cloudflared already installed"
-    $cfPath = (Get-Command cloudflared).Source
-}} elseif (Test-Path $cfPath) {{
-    Write-Host "  [OK]  cloudflared found at $cfPath"
-}} else {{
-    Write-Host "  [..]  Downloading cloudflared..."
-    New-Item -ItemType Directory -Force -Path (Split-Path $cfPath) | Out-Null
-    $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $cfPath -UseBasicParsing
-    Write-Host "  [OK]  cloudflared downloaded to $cfPath"
-}}
+REM ── 1. Ensure OpenSSH Server is installed + running ─────────────
+echo   [..]  Checking OpenSSH Server...
+sc query sshd >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  OpenSSH Server service exists
+) else (
+    echo   [..]  Installing OpenSSH Server via DISM...
+    dism /Online /Add-Capability /CapabilityName:OpenSSH.Server~~~~0.0.1.0 /NoRestart >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  OpenSSH Server installed
+    ) else (
+        echo   [!!]  DISM install failed -- install OpenSSH Server manually
+        echo         Settings -^> Apps -^> Optional Features -^> OpenSSH Server
+    )
+)
+net start sshd >nul 2>&1
+sc config sshd start=auto >nul 2>&1
+echo   [OK]  sshd service running (auto-start enabled)
 
-# ── 3. Install tunnel service ────────────────────────────────────
-Write-Host "  [..]  Installing cloudflared tunnel service..."
-$r = Start-Process -FilePath $cfPath -ArgumentList "service","install",$TOKEN `
-     -Wait -PassThru -NoNewWindow 2>$null
-if ($r.ExitCode -eq 0) {{
-    Write-Host "  [OK]  cloudflared service installed"
-}} else {{
-    # May already be installed -- try uninstall + reinstall
-    Start-Process -FilePath $cfPath -ArgumentList "service","uninstall" -Wait -NoNewWindow 2>$null
-    $r2 = Start-Process -FilePath $cfPath -ArgumentList "service","install",$TOKEN `
-          -Wait -PassThru -NoNewWindow 2>$null
-    if ($r2.ExitCode -eq 0) {{
-        Write-Host "  [OK]  cloudflared service reinstalled"
-    }} else {{
-        Write-Host "  [!!]  Service install failed -- ensure running as Administrator"
-    }}
-}}
+REM ── 2. Download cloudflared ─────────────────────────────────────
+set "CF_DIR=%ProgramFiles%\\cloudflared"
+set "CF_PATH=%CF_DIR%\\cloudflared.exe"
 
-# ── 4. SSH CA trust (short-lived certificates) ────────────────────
-if ($SSH_CA_KEY) {{
-    Write-Host "  [..]  Configuring sshd to trust CF SSH CA..."
-    $sshDir  = "$env:ProgramData\\ssh"
-    $caPath  = "$sshDir\\ca.pub"
-    $cfgPath = "$sshDir\\sshd_config"
+where cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared already in PATH
+    for /f "delims=" %%i in ('where cloudflared') do set "CF_PATH=%%i"
+    goto :cf_done
+)
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared found at %CF_PATH%
+    goto :cf_done
+)
 
-    Set-Content -Path $caPath -Value $SSH_CA_KEY -Force
-    Write-Host "  [OK]  CA key written to $caPath"
+echo   [..]  Downloading cloudflared...
+if not exist "%CF_DIR%" mkdir "%CF_DIR%"
+set "CF_URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
-    $cfg = Get-Content $cfgPath -Raw -ErrorAction SilentlyContinue
-    if ($cfg -and $cfg -notmatch "TrustedUserCAKeys") {{
-        Add-Content -Path $cfgPath -Value "`n# Cloudflare Access short-lived SSH certificates`nTrustedUserCAKeys $caPath"
-        Write-Host "  [OK]  TrustedUserCAKeys added to sshd_config"
-    }} elseif ($cfg -match "TrustedUserCAKeys") {{
-        Write-Host "  [OK]  sshd_config already has TrustedUserCAKeys"
-    }}
+REM Try curl first (Windows 10 1803+), then certutil, then bitsadmin
+curl.exe -fsSL -o "%CF_PATH%" "%CF_URL%" 2>nul
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via curl
+    goto :cf_done
+)
+certutil -urlcache -split -f "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via certutil
+    goto :cf_done
+)
+bitsadmin /transfer cf /download /priority high "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via bitsadmin
+    goto :cf_done
+)
+echo   [!!]  Could not download cloudflared. Download manually:
+echo         %CF_URL%
+echo         Place at: %CF_PATH%
+goto :cf_done
 
-    Restart-Service sshd -ErrorAction SilentlyContinue
-    Write-Host "  [OK]  sshd restarted with CF CA trust"
-}} else {{
-    Write-Host "  [..]  No SSH CA key -- short-lived certs not configured"
-}}
+:cf_done
 
-# ── 5. Verify ─────────────────────────────────────────────────────
-Start-Sleep -Seconds 5
-if (Get-Service cloudflared -ErrorAction SilentlyContinue | Where-Object Status -eq Running) {{
-    Write-Host "  [OK]  cloudflared is running"
-}} else {{
-    Write-Host "  [!!]  cloudflared may not be running -- check: Get-Service cloudflared"
-}}
+REM ── 3. Install tunnel service ───────────────────────────────────
+echo   [..]  Installing cloudflared tunnel service...
+"%CF_PATH%" service install %TOKEN% >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared service installed
+) else (
+    REM May already be installed -- try uninstall + reinstall
+    "%CF_PATH%" service uninstall >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    "%CF_PATH%" service install %TOKEN% >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  cloudflared service reinstalled
+    ) else (
+        echo   [!!]  Service install failed -- ensure running as Administrator
+    )
+)
 
-Write-Host ""
-Write-Host "  ================================================"
-Write-Host "    Done!  Host is ready."
-Write-Host "  ================================================"
-Write-Host ""
-Write-Host "  Browser SSH : https://$SSH_HOST"
-Write-Host "  Connects to : $env:USERNAME@$env:COMPUTERNAME"
-Write-Host ""
+REM ── 4. SSH CA trust (short-lived certificates) ──────────────────
+if "%SSH_CA_KEY%"=="" (
+    echo   [..]  No SSH CA key -- short-lived certs not configured
+    goto :ca_done
+)
+
+echo   [..]  Configuring sshd to trust CF SSH CA...
+set "SSH_DIR=%ProgramData%\\ssh"
+set "CA_PATH=%SSH_DIR%\\ca.pub"
+set "SSHD_CFG=%SSH_DIR%\\sshd_config"
+
+echo %SSH_CA_KEY%> "%CA_PATH%"
+echo   [OK]  CA key written to %CA_PATH%
+
+if not exist "%SSHD_CFG%" (
+    echo   [!!]  sshd_config not found at %SSHD_CFG%
+    goto :ca_done
+)
+
+findstr /C:"TrustedUserCAKeys" "%SSHD_CFG%" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  sshd_config already has TrustedUserCAKeys
+) else (
+    echo.>> "%SSHD_CFG%"
+    echo # Cloudflare Access short-lived SSH certificates>> "%SSHD_CFG%"
+    echo TrustedUserCAKeys %CA_PATH%>> "%SSHD_CFG%"
+    echo   [OK]  TrustedUserCAKeys added to sshd_config
+)
+
+net stop sshd >nul 2>&1
+net start sshd >nul 2>&1
+echo   [OK]  sshd restarted with CF CA trust
+
+:ca_done
+
+REM ── 5. Verify ───────────────────────────────────────────────────
+echo   [..]  Waiting for tunnel...
+timeout /t 5 /nobreak >nul
+sc query cloudflared | findstr /C:"RUNNING" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared is running
+) else (
+    echo   [!!]  cloudflared may not be running -- check: sc query cloudflared
+)
+
+echo.
+echo   ================================================
+echo     Done!  Host is ready.
+echo   ================================================
+echo.
+echo   Browser SSH : https://%SSH_HOST%
+echo   Connects to : %USERNAME%@%COMPUTERNAME%
+echo.
+endlocal
 '''
-    (keys_dir / "host_install.ps1").write_text(host_ps)
-    generated["host_ps"] = keys_dir / "host_install.ps1"
+    (keys_dir / "host_install.bat").write_text(host_bat)
+    generated["host_bat"] = keys_dir / "host_install.bat"
 
     # ══════════════════════════════════════════════════════════════════════
     #  CLIENT: Bash installer (Mac + Linux)
@@ -1246,85 +1295,120 @@ echo ""
     generated["client_sh"] = keys_dir / "client_install.sh"
 
     # ══════════════════════════════════════════════════════════════════════
-    #  CLIENT: PowerShell/Batch installer (Windows — no admin needed)
+    #  CLIENT: Batch installer (Windows — no admin, no PowerShell needed)
     # ══════════════════════════════════════════════════════════════════════
-    client_ps = f'''# ═══════════════════════════════════════════════════════════════════
-#  erebus-edge CLIENT installer for Windows (auto-generated)
-#  No admin needed. Downloads cloudflared to user directory.
-#
-#  Run:  powershell -ExecutionPolicy Bypass -File client_install.ps1
-# ═══════════════════════════════════════════════════════════════════
-$SSH_HOST   = "{ssh_host}"
-$InstallDir = "$env:LOCALAPPDATA\\erebus-edge"
+    client_bat = f'''@echo off
+setlocal enabledelayedexpansion
+REM ═══════════════════════════════════════════════════════════════════
+REM  erebus-edge CLIENT installer for Windows (auto-generated)
+REM  Pure batch -- works even when PowerShell is blocked by GPO.
+REM  No admin needed. Downloads cloudflared to user directory.
+REM
+REM  Double-click or run:  client_install.bat
+REM ═══════════════════════════════════════════════════════════════════
 
-Write-Host ""
-Write-Host "  ================================================"
-Write-Host "    erebus-edge -- Client Installer (Windows)"
-Write-Host "  ================================================"
-Write-Host ""
+set "SSH_HOST={ssh_host}"
+set "INSTALL_DIR=%LOCALAPPDATA%\\erebus-edge"
 
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+echo.
+echo   ================================================
+echo     erebus-edge -- Client Installer (Windows)
+echo   ================================================
+echo.
 
-# ── 1. Download cloudflared (portable, no admin) ──────────────────
-$cfPath = "$InstallDir\\cloudflared.exe"
-if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
-    Write-Host "  [OK]  cloudflared already in PATH"
-    $cfPath = (Get-Command cloudflared).Source
-}} elseif (Test-Path $cfPath) {{
-    Write-Host "  [OK]  cloudflared already at $cfPath"
-}} else {{
-    Write-Host "  [..]  Downloading cloudflared..."
-    $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $cfPath -UseBasicParsing
-    Write-Host "  [OK]  cloudflared downloaded to $cfPath"
-}}
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-# ── 2. Create connect.bat ─────────────────────────────────────────
-$bat = "$InstallDir\\connect.bat"
-@"
-@echo off
-set /p USER=Username on remote host:
-"$cfPath" access ssh --hostname $SSH_HOST
-ssh -o "ProxyCommand=""$cfPath"" access ssh --hostname $SSH_HOST" %USER%@$SSH_HOST
-"@ | Set-Content -Path $bat -Encoding ASCII
-Write-Host "  [OK]  Created $bat"
+REM ── 1. Download cloudflared (portable, no admin) ────────────────
+set "CF_PATH=%INSTALL_DIR%\\cloudflared.exe"
 
-# ── 3. SSH config entry ──────────────────────────────────────────
-$sshDir = "$env:USERPROFILE\\.ssh"
-$sshCfg = "$sshDir\\config"
-New-Item -ItemType Directory -Force -Path $sshDir -ErrorAction SilentlyContinue | Out-Null
-$entry = @"
+where cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared already in PATH
+    for /f "delims=" %%i in ('where cloudflared') do set "CF_PATH=%%i"
+    goto :cf_done
+)
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared already at %CF_PATH%
+    goto :cf_done
+)
 
-# erebus-edge -- CF Tunnel SSH
-Host $SSH_HOST
-    ProxyCommand "$cfPath" access ssh --hostname %h
-    StrictHostKeyChecking no
-    UserKnownHostsFile NUL
-"@
-if ((Test-Path $sshCfg) -and (Select-String -Path $sshCfg -Pattern $SSH_HOST -Quiet)) {{
-    Write-Host "  [OK]  SSH config already has $SSH_HOST entry"
-}} else {{
-    Add-Content -Path $sshCfg -Value $entry
-    Write-Host "  [OK]  Added SSH config entry for $SSH_HOST"
-    Write-Host "  [..]  Connect with:  ssh YOUR_USER@$SSH_HOST"
-}}
+echo   [..]  Downloading cloudflared...
+set "CF_URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
 
-Write-Host ""
-Write-Host "  ================================================"
-Write-Host "    Done!  Client is ready."
-Write-Host "  ================================================"
-Write-Host ""
-Write-Host "  Browser SSH (zero install):"
-Write-Host "    https://$SSH_HOST"
-Write-Host ""
-Write-Host "  CLI SSH:"
-Write-Host "    ssh YOUR_USER@$SSH_HOST"
-Write-Host "    $bat"
-Write-Host ""
+REM Try curl first (Windows 10 1803+), then certutil, then bitsadmin
+curl.exe -fsSL -o "%CF_PATH%" "%CF_URL%" 2>nul
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via curl
+    goto :cf_done
+)
+certutil -urlcache -split -f "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via certutil
+    goto :cf_done
+)
+bitsadmin /transfer cf /download /priority high "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via bitsadmin
+    goto :cf_done
+)
+echo   [!!]  Could not download cloudflared automatically.
+echo         Download manually from:
+echo           %CF_URL%
+echo         Save to: %CF_PATH%
+goto :cf_done
+
+:cf_done
+
+REM ── 2. Create connect.bat ───────────────────────────────────────
+set "CONNECT=%INSTALL_DIR%\\connect.bat"
+(
+    echo @echo off
+    echo set /p RUSER=Username on remote host:
+    echo "%CF_PATH%" access ssh --hostname %SSH_HOST%
+    echo ssh -o "ProxyCommand=""%CF_PATH%"" access ssh --hostname %SSH_HOST%" %%RUSER%%@%SSH_HOST%
+) > "%CONNECT%"
+echo   [OK]  Created %CONNECT%
+
+REM ── 3. SSH config entry ─────────────────────────────────────────
+set "SSH_DIR=%USERPROFILE%\\.ssh"
+set "SSH_CFG=%SSH_DIR%\\config"
+if not exist "%SSH_DIR%" mkdir "%SSH_DIR%"
+
+if exist "%SSH_CFG%" (
+    findstr /C:"%SSH_HOST%" "%SSH_CFG%" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  SSH config already has %SSH_HOST% entry
+        goto :ssh_done
+    )
+)
+
+echo.>> "%SSH_CFG%"
+echo # erebus-edge -- CF Tunnel SSH>> "%SSH_CFG%"
+echo Host %SSH_HOST%>> "%SSH_CFG%"
+echo     ProxyCommand "%CF_PATH%" access ssh --hostname %%h>> "%SSH_CFG%"
+echo     StrictHostKeyChecking no>> "%SSH_CFG%"
+echo     UserKnownHostsFile NUL>> "%SSH_CFG%"
+echo   [OK]  Added SSH config entry for %SSH_HOST%
+echo   [..]  Connect with:  ssh YOUR_USER@%SSH_HOST%
+
+:ssh_done
+
+echo.
+echo   ================================================
+echo     Done!  Client is ready.
+echo   ================================================
+echo.
+echo   Browser SSH (zero install):
+echo     https://%SSH_HOST%
+echo.
+echo   CLI SSH:
+echo     ssh YOUR_USER@%SSH_HOST%
+echo     %CONNECT%
+echo.
+endlocal
 '''
-    (keys_dir / "client_install.ps1").write_text(client_ps)
-    generated["client_ps"] = keys_dir / "client_install.ps1"
+    (keys_dir / "client_install.bat").write_text(client_bat)
+    generated["client_bat"] = keys_dir / "client_install.bat"
 
     for name, path in generated.items():
         ok(f"Generated: {path.name}")
@@ -1371,15 +1455,16 @@ def print_summary(subdomain, emails, tsnet_ok=False):
     {C}HOST (machine being SSH'd into):{X}
       Mac / Linux : {installers['host_sh']}
         chmod +x host_install.sh && sudo ./host_install.sh
-      Windows     : {installers['host_ps']}
-        powershell -ExecutionPolicy Bypass -File host_install.ps1
+      Windows     : {installers['host_bat']}
+        Right-click -> Run as Administrator
 
     {C}CLIENT (machine connecting from):{X}
       Mac / Linux : {installers['client_sh']}
         chmod +x client_install.sh && ./client_install.sh
-      Windows     : {installers['client_ps']}
-        powershell -ExecutionPolicy Bypass -File client_install.ps1
+      Windows     : {installers['client_bat']}
+        Double-click or run: client_install.bat
 
+    Pure .bat files -- no PowerShell needed (works when GPO blocks .ps1).
     Host installers embed token + SSH CA key. No arguments needed.
     Client installers need no admin. All files in keys/ (gitignored).
 """)
