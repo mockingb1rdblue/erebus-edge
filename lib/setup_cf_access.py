@@ -5,9 +5,7 @@ setup_cf_access.py -- Configure Cloudflare Zero Trust Access.
 What this does:
   1. Creates / verifies the Zero Trust organization
   2. Adds an email OTP identity provider (if not already present)
-  3. Creates Access applications for:
-       - ssh.SUB.workers.dev   (browser-rendered SSH terminal, type "ssh")
-       - portal.SUB.workers.dev (the PWA management UI, type "self_hosted")
+  3. Creates an SSH Access application (browser-rendered SSH terminal)
   4. Creates Access policies allowing specific email addresses
   5. Generates a short-lived certificate CA for the SSH app
      (enables passwordless SSH via CF-signed ephemeral certificates)
@@ -15,14 +13,15 @@ What this does:
 Run:  python setup_cf_access.py [--email you@example.com]
 """
 
-import json, ssl, sys, urllib.request, urllib.error, argparse
+import json, os, ssl, sys, urllib.request, urllib.error, argparse
 
-from cf_creds import get_token
-from config import get_config, save_config, require
+# Allow running standalone: python lib/setup_cf_access.py
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from lib.cf_creds import get_token
+from lib.config import get_config, save_config, require
 
 CF_TOKEN   = get_token()
 ACCT       = require("account_id")
-PORTAL_URL = require("portal_host")
 SSH_HOST   = require("ssh_host")
 
 # ── SSL context ───────────────────────────────────────────────────────────────
@@ -220,8 +219,6 @@ def main():
     parser.add_argument("--email", action="append", metavar="EMAIL",
                         help="Email address to allow (can be repeated). "
                              "If omitted, you will be prompted.")
-    parser.add_argument("--skip-portal", action="store_true",
-                        help="Skip portal Access app")
     args = parser.parse_args()
 
     print()
@@ -276,37 +273,19 @@ def main():
             })
             print(f"[OK] SSH CA public key saved to config")
 
-    # Step 5: Portal Access app (optional)
-    if not args.skip_portal:
-        portal_app_id, _ = ensure_app(PORTAL_URL, "SSH Portal")
-        if portal_app_id:
-            ensure_policy(portal_app_id, emails)
-
     print()
     print("=" * 58)
     print("  CF Access setup complete!")
     print("=" * 58)
     print()
     print(f"  SSH (browser): https://{SSH_HOST}")
-    print(f"    -> Browser-rendered SSH terminal (no ttyd needed)")
+    print(f"    -> Browser-rendered SSH terminal")
     print(f"    -> Short-lived certificates (no static SSH keys)")
-    print()
-    if not args.skip_portal:
-        print(f"  Portal       : https://{PORTAL_URL}")
     print()
     if org:
         auth_domain = org.get("auth_domain", "")
         print(f"  Auth domain  : https://{auth_domain}")
         print(f"  Team name    : {team_name}")
-    print()
-    print("  Users authenticate via email OTP before gaining SSH access.")
-    print("  CF generates a short-lived certificate for each session --")
-    print("  no static SSH keys needed.")
-    print()
-    if ssh_ca_pub_key:
-        print("  Home machine: configure sshd to trust CF's CA:")
-        print("    python3 home_setup.py --token TOKEN --ssh-ca-key '...'")
-        print("    (full command printed by: python bootstrap.py)")
     print()
 
 

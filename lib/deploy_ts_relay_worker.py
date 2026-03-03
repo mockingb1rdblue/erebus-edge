@@ -18,13 +18,14 @@ Routes handled by the Worker:
   everything else   →  controlplane.tailscale.com
 """
 
-import json, sys, urllib.request, urllib.error, ssl
+import json, os, sys, urllib.request, urllib.error, ssl
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-from config import require, get_config, save_config
+# Allow running standalone: python lib/deploy_ts_relay_worker.py
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+from lib.config import require, get_config, save_config
 
-SCRIPT_DIR = Path(__file__).parent
+REPO_ROOT = Path(__file__).parent.parent
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False

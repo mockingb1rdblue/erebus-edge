@@ -1,34 +1,32 @@
 #!/usr/bin/env python3
 """
-bootstrap.py -- First-run setup wizard for SSH Portal.
+bootstrap.py -- First-run setup wizard for erebus-edge.
 
 Works for ANY Cloudflare account. Share the repo, not the URL.
 Each user runs this once to get their own deployment.
 
 What it does:
-  1. Authenticate via CF browser OAuth (no manual token needed)
-     → creates a scoped 'ssh-portal' API token automatically
-  2. Discover your workers.dev subdomain (e.g. "alice")
-  3. Create a CF Tunnel named "home-ssh" (or reuse existing)
-  4. Create/find the 'ssh-portal' KV namespace
-  5. Deploy CF Workers: ssh, portal, term
-  6. Update tunnel ingress for ssh + term routes
-  7. Set up CF Zero Trust Access with email OTP (optional)
-  8. Save everything to keys/portal_config.json
-  9. Write CF_HOST to cf_config.txt (for connect.bat / connect.sh)
+  1. Authenticate via CF browser OAuth
+  2. Create a CF Tunnel + SSH Worker
+  3. Set up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
+  4. Deploy ts-relay Worker (Tailscale bypass, optional)
+  5. Build tsnet.exe (userspace Tailscale, optional)
+  6. Generate standalone installer scripts in keys/
 
 Usage:
   python bootstrap.py                  # full wizard
   python bootstrap.py --redeploy       # re-deploy Workers with existing config
   python bootstrap.py --skip-access    # skip CF Access setup
+  python bootstrap.py --skip-tsnet     # skip Tailscale build
+  python bootstrap.py --build-tsnet    # only rebuild tsnet binary
 """
 
 import argparse, base64, getpass, hashlib, json, os, re, shutil, ssl, subprocess, sys, zipfile
 import urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 
-from config import get_config, save_config, CFG_FILE
-import cf_creds as _creds_mod
+from lib.config import get_config, save_config, CFG_FILE
+import lib.cf_creds as _creds_mod
 
 SCRIPT_DIR   = Path(__file__).parent
 BIN_DIR      = SCRIPT_DIR / "bin"
@@ -431,66 +429,15 @@ export default {{
 }};
 """
 
-def _term_worker_js(tunnel_id, term_host):
-    return f"""\
-// Terminal proxy Worker: forwards HTTP+WebSocket to ttyd via CF Tunnel.
-const TUNNEL    = '{tunnel_id}.cfargotunnel.com';
-const TERM_HOST = '{term_host}';
-export default {{
-  async fetch(request) {{
-    const url  = new URL(request.url);
-    const dest = new URL(url.pathname + url.search, `https://${{TUNNEL}}`);
-    const headers = new Headers();
-    for (const [k, v] of request.headers) {{
-      if (/^(cf-|x-forwarded-|x-real-ip)/i.test(k)) continue;
-      headers.set(k, v);
-    }}
-    headers.set('Host', TERM_HOST);
-    try {{
-      return await fetch(dest.toString(), {{
-        method: request.method, headers,
-        body: ['GET','HEAD'].includes(request.method) ? undefined : request.body,
-        redirect: 'manual',
-      }});
-    }} catch(e) {{
-      return new Response(
-        `<html><body style="font-family:monospace;background:#0d1117;color:#e6edf3;padding:2rem">
-         <h2 style="color:#f85149">&#x26A1; Terminal unreachable</h2>
-         <p>Could not reach home machine. Make sure cloudflared + ttyd are running.</p>
-         <p style="color:#8b949e">${{e.message}}</p></body></html>`,
-        {{status:503,headers:{{'Content-Type':'text/html'}}}}
-      );
-    }}
-  }}
-}};
-"""
-
-def _portal_worker_js():
-    """Load portal Worker JS from deploy_portal_worker.py (reuse its SPA)."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("dpm", SCRIPT_DIR/"deploy_portal_worker.py")
-    mod  = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.WORKER_CODE
-
-
 def step_workers(acct_id, subdomain, tunnel_id):
-    hdr("Step 5: Deploy Workers")
-    ssh_host    = f"ssh.{subdomain}.workers.dev"
-    portal_host = f"portal.{subdomain}.workers.dev"
-    term_host   = f"term.{subdomain}.workers.dev"
+    hdr("Step 5: Deploy SSH Worker")
+    ssh_host = f"ssh.{subdomain}.workers.dev"
 
-    workers = [
-        ("ssh",    _ssh_worker_js(tunnel_id, ssh_host),    f"https://{ssh_host}"),
-        ("portal", _portal_worker_js(),                     f"https://{portal_host}"),
-        ("term",   _term_worker_js(tunnel_id, term_host),  f"https://{term_host}"),
-    ]
-    for name, js, url in workers:
-        print(f"  Deploying '{name}' Worker ...", end=" ", flush=True)
-        if _deploy_worker(acct_id, name, js):
-            print(f"{G}OK{X}  →  {url}")
-        else:
-            print(f"{R}FAILED{X}")
+    print(f"  Deploying 'ssh' Worker ...", end=" ", flush=True)
+    if _deploy_worker(acct_id, "ssh", _ssh_worker_js(tunnel_id, ssh_host)):
+        print(f"{G}OK{X}  ->  https://{ssh_host}")
+    else:
+        print(f"{R}FAILED{X}")
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Step 6 – Tunnel ingress
@@ -555,10 +502,9 @@ def step_access(acct_id, subdomain, emails):
         return
 
     import importlib.util
-    spec = importlib.util.spec_from_file_location("sca", SCRIPT_DIR/"setup_cf_access.py")
+    spec = importlib.util.spec_from_file_location("sca", SCRIPT_DIR/"lib"/"setup_cf_access.py")
     mod  = importlib.util.module_from_spec(spec)
     mod.ACCT       = acct_id
-    mod.PORTAL_URL = f"portal.{subdomain}.workers.dev"
     mod.SSH_HOST   = f"ssh.{subdomain}.workers.dev"
     mod.CF_TOKEN   = _TOKEN
     spec.loader.exec_module(mod)
@@ -586,11 +532,6 @@ def step_access(acct_id, subdomain, emails):
             })
             ok("SSH short-lived certificate CA generated and saved")
 
-    # Portal app (self-hosted)
-    portal_app_id, _ = mod.ensure_app(mod.PORTAL_URL, "SSH Portal")
-    if portal_app_id:
-        mod.ensure_policy(portal_app_id, emails)
-
     ok("CF Access configured.")
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -599,7 +540,7 @@ def step_access(acct_id, subdomain, emails):
 def step_ts_relay(acct_id, subdomain) -> str | None:
     hdr("Step 8: Deploy ts-relay Worker (Tailscale bypass)")
     import importlib.util
-    spec = importlib.util.spec_from_file_location("dtrw", SCRIPT_DIR / "deploy_ts_relay_worker.py")
+    spec = importlib.util.spec_from_file_location("dtrw", SCRIPT_DIR / "lib" / "deploy_ts_relay_worker.py")
     mod  = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -739,11 +680,11 @@ def _download_go_toolchain() -> str | None:
 
 def _build_tsnet(go_exe: str) -> bool:
     """Download latest tailscale and build tsnet.exe."""
-    tsnet_src = SCRIPT_DIR / "tsnet-src"
+    tsnet_src = SCRIPT_DIR / "tsnet"
     tsnet_exe = BIN_DIR / "tsnet.exe"
 
     if not tsnet_src.exists() or not (tsnet_src / "main.go").exists():
-        warn("tsnet-src/main.go not found. Cannot build.")
+        warn("tsnet/main.go not found. Cannot build.")
         return False
 
     _go_env = os.environ.copy()
@@ -806,20 +747,14 @@ def step_build_tsnet():
 # ═════════════════════════════════════════════════════════════════════════════
 def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
     hdr("Saving configuration")
-    ssh_host    = f"ssh.{subdomain}.workers.dev"
-    portal_host = f"portal.{subdomain}.workers.dev"
-    term_host   = f"term.{subdomain}.workers.dev"
+    ssh_host = f"ssh.{subdomain}.workers.dev"
 
-    # ts_relay_url is derived from subdomain here; step_ts_relay will
-    # overwrite it with the confirmed URL after successful deploy.
     cfg = {
         "account_id":   acct_id,
         "subdomain":    subdomain,
         "tunnel_id":    tunnel_id,
         "kv_ns_id":     kv_ns_id,
         "ssh_host":     ssh_host,
-        "portal_host":  portal_host,
-        "term_host":    term_host,
     }
     if tunnel_tok:
         cfg["tunnel_token"] = tunnel_tok
@@ -852,7 +787,7 @@ def generate_installers(subdomain):
     All Windows files are pure .bat -- works when GPO/AppLocker blocks .ps1.
     Token + SSH CA key are baked in — no arguments needed.
     """
-    from config import get_config
+    from lib.config import get_config
     cfg = get_config()
     tunnel_tok = cfg.get("tunnel_token", "")
     ssh_ca_key = cfg.get("ssh_ca_public_key", "")
@@ -1423,7 +1358,7 @@ endlocal
 #  Summary
 # ═════════════════════════════════════════════════════════════════════════════
 def print_summary(subdomain, emails, tsnet_ok=False):
-    from config import get_config
+    from lib.config import get_config
     cfg = get_config()
     tunnel_tok  = cfg.get("tunnel_token", "")
     ssh_ca_key  = cfg.get("ssh_ca_public_key", "")
@@ -1437,10 +1372,9 @@ def print_summary(subdomain, emails, tsnet_ok=False):
     print(f"  {G}{B}Bootstrap complete!{X}")
     print(f"{'═'*58}")
     print(f"""
-  Your SSH Portal:
+  Your endpoints:
     Browser SSH : {C}https://ssh.{subdomain}.workers.dev{X}  (CF Access login)
-    Portal      : {C}https://portal.{subdomain}.workers.dev{X}
-    TS relay    : {C}https://ts-relay.{subdomain}.workers.dev{X}
+    TS relay    : {C}https://ts-relay.{subdomain}.workers.dev{X}  (Tailscale bypass)
 """)
     if emails:
         print(f"  CF Access (OTP email): {', '.join(emails)}")
