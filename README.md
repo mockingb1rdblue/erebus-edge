@@ -43,8 +43,6 @@ This opens your browser to log in to Cloudflare, then automatically:
 - Deploys the SSH Worker
 - Sets up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
 - Optionally builds `bin/tsnet.exe` (userspace Tailscale)
-- **Generates standalone installer scripts** in `installers/`
-
 Flags:
 
 | Flag | Purpose |
@@ -56,25 +54,25 @@ Flags:
 
 ### 2. Set up your home machine
 
-Copy the installer that matches your home machine's OS from `installers/`:
+Copy the installer that matches your home machine's OS from `installers/`.
+Bootstrap prints the exact command with your token -- copy-paste it.
 
 | Home machine OS | File | How to run |
 |-----------------|------|------------|
-| Linux / Mac | `installers/home_linux_mac.sh` | `chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh` |
-| Windows | `installers/home_windows.bat` | Right-click -> Run as Administrator |
-
-These are standalone -- token + SSH CA key baked in, no arguments needed.
+| Linux / Mac | `installers/home_linux_mac.sh` | `sudo ./home_linux_mac.sh --token <TOKEN> --ca-key "<KEY>" --ssh-host <HOST>` |
+| Windows | `installers/home_windows.bat` | Run as Administrator: `home_windows.bat <TOKEN> <CA_KEY> <HOST>` |
 
 ### 3. Set up your work machine
 
-Copy the installer that matches your work machine's OS from `installers/`:
+Copy the installer that matches your work machine's OS from `installers/`.
 
 | Work machine OS | File | How to run |
 |-----------------|------|------------|
-| Linux / Mac | `installers/work_linux_mac.sh` | `chmod +x work_linux_mac.sh && ./work_linux_mac.sh` |
-| Windows | `installers/work_windows.bat` | Double-click (no admin needed) |
+| Linux / Mac | `installers/work_linux_mac.sh` | `./work_linux_mac.sh --ssh-host <HOST>` |
+| Windows | `installers/work_windows.bat` | `work_windows.bat <HOST>` (no admin needed) |
 
 Windows `.bat` files work even when GPO blocks PowerShell.
+No secrets in the installer files -- tokens are passed as arguments at run time.
 
 ---
 
@@ -131,7 +129,7 @@ tsnet/                    Go source for bin/tsnet.exe (optional)
   main.go
   go.mod
 
-installers/               Generated standalone installers (gitignored)
+installers/               Standalone installer scripts (no secrets)
   home_linux_mac.sh         Run on home machine (Linux/Mac)
   home_windows.bat          Run on home machine (Windows)
   work_linux_mac.sh         Run on work machine (Linux/Mac)
