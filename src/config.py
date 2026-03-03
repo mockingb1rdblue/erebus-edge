@@ -1,5 +1,5 @@
 """
-config.py -- Shared config loader for all portal scripts.
+config.py -- Shared config loader for erebus-edge.
 
 Config is populated by running:  python bootstrap.py
 
@@ -13,8 +13,6 @@ Shape of keys/portal_config.json (written by bootstrap.py):
     "tunnel_id":    "<your tunnel ID>",
     "kv_ns_id":     "<your KV namespace ID>",
     "ssh_host":     "ssh.<subdomain>.workers.dev",
-    "portal_host":  "portal.<subdomain>.workers.dev",
-    "term_host":    "term.<subdomain>.workers.dev",
     "ts_relay_url": "https://ts-relay.<subdomain>.workers.dev"
 }
 """
@@ -22,8 +20,8 @@ Shape of keys/portal_config.json (written by bootstrap.py):
 import json, sys
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).parent
-CFG_FILE   = SCRIPT_DIR / "keys" / "portal_config.json"
+REPO_ROOT  = Path(__file__).parent.parent
+CFG_FILE   = REPO_ROOT / "keys" / "portal_config.json"
 
 
 def get_config() -> dict:
@@ -31,12 +29,9 @@ def get_config() -> dict:
     if CFG_FILE.exists():
         try:
             cfg = json.loads(CFG_FILE.read_text())
-            # Derive host names from subdomain if scripts wrote them without explicit hosts
             sub = cfg.get("subdomain", "")
             if sub:
                 cfg.setdefault("ssh_host",     f"ssh.{sub}.workers.dev")
-                cfg.setdefault("portal_host",  f"portal.{sub}.workers.dev")
-                cfg.setdefault("term_host",    f"term.{sub}.workers.dev")
                 cfg.setdefault("ts_relay_url", f"https://ts-relay.{sub}.workers.dev")
             return cfg
         except Exception as e:

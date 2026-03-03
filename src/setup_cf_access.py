@@ -1,19 +1,14 @@
 #!/usr/bin/env python3
 """
-setup_cf_access.py -- Configure Cloudflare Zero Trust Access for the portal + terminal.
+setup_cf_access.py -- Configure Cloudflare Zero Trust Access.
 
 What this does:
   1. Creates / verifies the Zero Trust organization
   2. Adds an email OTP identity provider (if not already present)
-  3. Creates Access applications for:
-       - portal.mock1ng.workers.dev  (the PWA management UI)
-       - term.mock1ng.workers.dev    (the web terminal -- MUST be protected)
+  3. Creates an SSH Access application (browser-rendered SSH terminal)
   4. Creates Access policies allowing specific email addresses
-
-CF Access with workers.dev subdomains works via the Access JWT which the
-Worker can validate, OR via the Access service token flow.  For this setup
-we protect the TERMINAL (high risk -- shell on home machine) with strict
-email-based OTP.  The portal SPA is protected by the CF token it holds.
+  5. Generates a short-lived certificate CA for the SSH app
+     (enables passwordless SSH via CF-signed ephemeral certificates)
 
 Run:  python setup_cf_access.py [--email you@example.com]
 """
@@ -21,12 +16,11 @@ Run:  python setup_cf_access.py [--email you@example.com]
 import json, ssl, sys, urllib.request, urllib.error, argparse
 
 from cf_creds import get_token
-from config import get_config, require
+from config import get_config, save_config, require
 
 CF_TOKEN   = get_token()
 ACCT       = require("account_id")
-PORTAL_URL = require("portal_host")
-TERM_URL   = require("term_host")
+SSH_HOST   = require("ssh_host")
 
 # ── SSL context ───────────────────────────────────────────────────────────────
 _SSL = ssl.create_default_context()
@@ -64,7 +58,6 @@ def ensure_org():
 
     # Create org
     print("Creating Zero Trust organization...")
-    # Use account name or a sensible default
     accts = api("GET", "/accounts").get("result", [])
     org_name = next((a["name"] for a in accts if a["id"] == ACCT), "mock1ng")
     r = api("PUT", f"/accounts/{ACCT}/access/organizations", {
@@ -121,30 +114,43 @@ def find_app(hostname):
     return next((a for a in r.get("result", []) if a.get("domain") == hostname), None)
 
 
-def ensure_app(hostname, name, session_duration="24h"):
+def ensure_app(hostname, name, app_type="self_hosted", session_duration="24h"):
+    """Create or find an Access application."""
     existing = find_app(hostname)
     if existing:
         print(f"[OK] Access app '{name}' already exists: {existing['id']}")
-        return existing["id"]
+        # If it exists but is wrong type, warn (don't recreate — user may have customized)
+        if existing.get("type") != app_type:
+            print(f"[WARN] App type is '{existing.get('type')}', expected '{app_type}'")
+        return existing["id"], existing.get("aud", "")
 
-    print(f"Creating Access app for {hostname} ...")
-    r = api("POST", f"/accounts/{ACCT}/access/apps", {
+    print(f"Creating Access app for {hostname} (type: {app_type}) ...")
+    payload = {
         "name":             name,
         "domain":           hostname,
-        "type":             "self_hosted",
+        "type":             app_type,
         "session_duration": session_duration,
-        "allowed_idps":     [],   # filled in after IDP is created
-        "auto_redirect_to_identity": False,
-        "http_only_cookie_attribute": True,
-        "same_site_cookie_attribute": "lax",
-    })
+        "allowed_idps":     [],
+        "auto_redirect_to_identity": True,
+        "app_launcher_visible": True,
+    }
+    # SSH-type apps need specific cookie settings to avoid websocket issues
+    if app_type == "ssh":
+        payload["enable_binding_cookie"]       = False
+        payload["http_only_cookie_attribute"]   = False
+    else:
+        payload["http_only_cookie_attribute"]   = True
+        payload["same_site_cookie_attribute"]   = "lax"
+
+    r = api("POST", f"/accounts/{ACCT}/access/apps", payload)
     if r.get("success"):
         app_id = r["result"]["id"]
+        aud    = r["result"].get("aud", "")
         print(f"[OK] Created Access app: {app_id}")
-        return app_id
+        return app_id, aud
     else:
         print(f"[FAIL] Could not create Access app: {r.get('errors')}")
-        return None
+        return None, ""
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -176,6 +182,34 @@ def ensure_policy(app_id, allowed_emails):
 
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  Short-lived SSH certificate CA
+# ═════════════════════════════════════════════════════════════════════════════
+def ensure_ssh_ca(app_id):
+    """Generate (or retrieve) the short-lived certificate CA for an SSH app.
+
+    Returns the CA public key string, or None on failure.
+    """
+    # Try to get existing CA
+    r = api("GET", f"/accounts/{ACCT}/access/apps/{app_id}/ca")
+    if r.get("success") and r.get("result") and r["result"].get("public_key"):
+        pub_key = r["result"]["public_key"]
+        print(f"[OK] SSH CA already exists (key: {pub_key[:40]}...)")
+        return pub_key
+
+    # Generate new CA
+    print("Generating short-lived SSH certificate CA...")
+    r = api("POST", f"/accounts/{ACCT}/access/apps/{app_id}/ca")
+    if r.get("success") and r.get("result"):
+        pub_key = r["result"].get("public_key", "")
+        if pub_key:
+            print(f"[OK] SSH CA generated (key: {pub_key[:40]}...)")
+            return pub_key
+
+    print(f"[FAIL] Could not generate SSH CA: {r.get('errors')}")
+    return None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Main
 # ═════════════════════════════════════════════════════════════════════════════
 def main():
@@ -183,8 +217,6 @@ def main():
     parser.add_argument("--email", action="append", metavar="EMAIL",
                         help="Email address to allow (can be repeated). "
                              "If omitted, you will be prompted.")
-    parser.add_argument("--skip-portal", action="store_true",
-                        help="Only protect the terminal, skip portal Access app")
     args = parser.parse_args()
 
     print()
@@ -217,37 +249,41 @@ def main():
         print("        Token needs: Zero Trust Edit permission.")
         sys.exit(1)
 
+    team_name = org.get("auth_domain", "").replace(".cloudflareaccess.com", "")
+
     # Step 2: Email OTP IDP
     idp_id = ensure_otp_idp()
 
-    # Step 3: Access apps
-    if not args.skip_portal:
-        portal_app_id = ensure_app(PORTAL_URL, "SSH Portal")
-        if portal_app_id:
-            ensure_policy(portal_app_id, emails)
+    # Step 3: SSH Access app (type "ssh" — enables browser-rendered SSH terminal)
+    print()
+    ssh_app_id, ssh_aud = ensure_app(
+        SSH_HOST, "SSH Browser Terminal", app_type="ssh", session_duration="24h")
+    if ssh_app_id:
+        ensure_policy(ssh_app_id, emails)
 
-    term_app_id = ensure_app(TERM_URL, "SSH Terminal")
-    if term_app_id:
-        ensure_policy(term_app_id, emails)
+        # Step 4: Short-lived certificate CA
+        ssh_ca_pub_key = ensure_ssh_ca(ssh_app_id)
+        if ssh_ca_pub_key:
+            save_config({
+                "ssh_ca_public_key": ssh_ca_pub_key,
+                "ssh_app_aud":       ssh_aud,
+                "team_name":         team_name,
+            })
+            print(f"[OK] SSH CA public key saved to config")
 
     print()
     print("=" * 58)
     print("  CF Access setup complete!")
     print("=" * 58)
     print()
-    print(f"  Portal  : https://{PORTAL_URL}")
-    print(f"  Terminal: https://{TERM_URL}")
+    print(f"  SSH (browser): https://{SSH_HOST}")
+    print(f"    -> Browser-rendered SSH terminal")
+    print(f"    -> Short-lived certificates (no static SSH keys)")
     print()
     if org:
         auth_domain = org.get("auth_domain", "")
-        print(f"  Auth domain : https://{auth_domain}")
-    print()
-    print("  Users visiting these URLs will be prompted to enter their")
-    print("  email and confirm via OTP code before gaining access.")
-    print()
-    print("  NOTE: CF Access on *.workers.dev requires the Access JWT")
-    print("  to be validated. The Workers themselves will be gated by")
-    print("  CF Access automatically when policies are applied.")
+        print(f"  Auth domain  : https://{auth_domain}")
+        print(f"  Team name    : {team_name}")
     print()
 
 

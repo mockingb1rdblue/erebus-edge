@@ -1,26 +1,24 @@
 #!/usr/bin/env python3
 """
-bootstrap.py -- First-run setup wizard for SSH Portal.
+bootstrap.py -- First-run setup wizard for erebus-edge.
 
 Works for ANY Cloudflare account. Share the repo, not the URL.
 Each user runs this once to get their own deployment.
 
 What it does:
-  1. Authenticate via CF browser OAuth (no manual token needed)
-     → creates a scoped 'ssh-portal' API token automatically
-  2. Discover your workers.dev subdomain (e.g. "alice")
-  3. Create a CF Tunnel named "home-ssh" (or reuse existing)
-  4. Create/find the 'ssh-portal' KV namespace
-  5. Deploy CF Workers: ssh, portal, term
-  6. Update tunnel ingress for ssh + term routes
-  7. Set up CF Zero Trust Access with email OTP (optional)
-  8. Save everything to keys/portal_config.json
-  9. Write CF_HOST to cf_config.txt (for connect.bat / connect.sh)
+  1. Authenticate via CF browser OAuth
+  2. Create a CF Tunnel + SSH Worker
+  3. Set up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
+  4. Deploy ts-relay Worker (Tailscale bypass, optional)
+  5. Build tsnet.exe (userspace Tailscale, optional)
+  6. Generate standalone installer scripts in installers/
 
 Usage:
   python bootstrap.py                  # full wizard
   python bootstrap.py --redeploy       # re-deploy Workers with existing config
   python bootstrap.py --skip-access    # skip CF Access setup
+  python bootstrap.py --skip-tsnet     # skip Tailscale build
+  python bootstrap.py --build-tsnet    # only rebuild tsnet binary
 """
 
 import argparse, base64, getpass, hashlib, json, os, re, shutil, ssl, subprocess, sys, zipfile
@@ -30,12 +28,13 @@ from pathlib import Path
 from config import get_config, save_config, CFG_FILE
 import cf_creds as _creds_mod
 
-SCRIPT_DIR   = Path(__file__).parent
-BIN_DIR      = SCRIPT_DIR / "bin"
-KEYS_DIR     = SCRIPT_DIR / "keys"
+SCRIPT_DIR   = Path(__file__).parent          # src/
+REPO_ROOT    = SCRIPT_DIR.parent              # project root
+BIN_DIR      = REPO_ROOT / "bin"
+KEYS_DIR     = REPO_ROOT / "keys"
 CF_CERT_PATH = KEYS_DIR / "cf_login.pem"
 CLOUDFLARED  = str(BIN_DIR / "cloudflared.exe")
-CF_CFG_TXT   = SCRIPT_DIR / "cf_config.txt"
+CF_CFG_TXT   = REPO_ROOT / "cf_config.txt"
 
 PORTAL_TOKEN_NAME = "ssh-portal"
 REQUIRED_PERMS = [
@@ -431,66 +430,15 @@ export default {{
 }};
 """
 
-def _term_worker_js(tunnel_id, term_host):
-    return f"""\
-// Terminal proxy Worker: forwards HTTP+WebSocket to ttyd via CF Tunnel.
-const TUNNEL    = '{tunnel_id}.cfargotunnel.com';
-const TERM_HOST = '{term_host}';
-export default {{
-  async fetch(request) {{
-    const url  = new URL(request.url);
-    const dest = new URL(url.pathname + url.search, `https://${{TUNNEL}}`);
-    const headers = new Headers();
-    for (const [k, v] of request.headers) {{
-      if (/^(cf-|x-forwarded-|x-real-ip)/i.test(k)) continue;
-      headers.set(k, v);
-    }}
-    headers.set('Host', TERM_HOST);
-    try {{
-      return await fetch(dest.toString(), {{
-        method: request.method, headers,
-        body: ['GET','HEAD'].includes(request.method) ? undefined : request.body,
-        redirect: 'manual',
-      }});
-    }} catch(e) {{
-      return new Response(
-        `<html><body style="font-family:monospace;background:#0d1117;color:#e6edf3;padding:2rem">
-         <h2 style="color:#f85149">&#x26A1; Terminal unreachable</h2>
-         <p>Could not reach home machine. Make sure cloudflared + ttyd are running.</p>
-         <p style="color:#8b949e">${{e.message}}</p></body></html>`,
-        {{status:503,headers:{{'Content-Type':'text/html'}}}}
-      );
-    }}
-  }}
-}};
-"""
-
-def _portal_worker_js():
-    """Load portal Worker JS from deploy_portal_worker.py (reuse its SPA)."""
-    import importlib.util
-    spec = importlib.util.spec_from_file_location("dpm", SCRIPT_DIR/"deploy_portal_worker.py")
-    mod  = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.WORKER_CODE
-
-
 def step_workers(acct_id, subdomain, tunnel_id):
-    hdr("Step 5: Deploy Workers")
-    ssh_host    = f"ssh.{subdomain}.workers.dev"
-    portal_host = f"portal.{subdomain}.workers.dev"
-    term_host   = f"term.{subdomain}.workers.dev"
+    hdr("Step 5: Deploy SSH Worker")
+    ssh_host = f"ssh.{subdomain}.workers.dev"
 
-    workers = [
-        ("ssh",    _ssh_worker_js(tunnel_id, ssh_host),    f"https://{ssh_host}"),
-        ("portal", _portal_worker_js(),                     f"https://{portal_host}"),
-        ("term",   _term_worker_js(tunnel_id, term_host),  f"https://{term_host}"),
-    ]
-    for name, js, url in workers:
-        print(f"  Deploying '{name}' Worker ...", end=" ", flush=True)
-        if _deploy_worker(acct_id, name, js):
-            print(f"{G}OK{X}  →  {url}")
-        else:
-            print(f"{R}FAILED{X}")
+    print(f"  Deploying 'ssh' Worker ...", end=" ", flush=True)
+    if _deploy_worker(acct_id, "ssh", _ssh_worker_js(tunnel_id, ssh_host)):
+        print(f"{G}OK{X}  ->  https://{ssh_host}")
+    else:
+        print(f"{R}FAILED{X}")
 
 # ═════════════════════════════════════════════════════════════════════════════
 #  Step 6 – Tunnel ingress
@@ -498,28 +446,48 @@ def step_workers(acct_id, subdomain, tunnel_id):
 def step_ingress(acct_id, tunnel_id, subdomain):
     hdr("Step 6: Tunnel ingress rules")
     ssh_host  = f"ssh.{subdomain}.workers.dev"
-    term_host = f"term.{subdomain}.workers.dev"
 
     url = f"/accounts/{acct_id}/cfd_tunnel/{tunnel_id}/configurations"
     r   = api("GET", url)
     existing = r.get("result", {}).get("config", {}).get("ingress", [])
 
-    # Build desired ingress
+    # Load Access aud tag + team name for origin-side JWT validation
+    cfg = get_config()
+    ssh_aud   = cfg.get("ssh_app_aud", "")
+    team_name = cfg.get("team_name", "")
+
+    # Build SSH ingress rule with Access validation
+    ssh_rule = {"hostname": ssh_host, "service": "ssh://localhost:22"}
+    if ssh_aud and team_name:
+        ssh_rule["originRequest"] = {
+            "access": {
+                "required": True,
+                "teamName": team_name,
+                "audTag":   [ssh_aud],
+            }
+        }
+
     rules = [
-        {"hostname": ssh_host,  "service": "ssh://localhost:22"},
-        {"hostname": term_host, "service": "http://localhost:7681"},
+        ssh_rule,
         {"service": "http_status:404"},
     ]
 
-    has_ssh  = any(isinstance(x, dict) and x.get("hostname") == ssh_host  for x in existing)
-    has_term = any(isinstance(x, dict) and x.get("hostname") == term_host for x in existing)
-    if has_ssh and has_term:
-        ok("Tunnel ingress already configured.")
-        return
+    has_ssh = any(isinstance(x, dict) and x.get("hostname") == ssh_host for x in existing)
+    if has_ssh:
+        # Check if existing rule already has Access validation
+        ssh_existing = next(x for x in existing if isinstance(x, dict) and x.get("hostname") == ssh_host)
+        has_access = bool(ssh_existing.get("originRequest", {}).get("access"))
+        if has_access or not ssh_aud:
+            ok("Tunnel ingress already configured.")
+            return
+        # Upgrade: add Access validation to existing ingress
+        print(f"  Upgrading ingress with Access JWT validation...")
 
     r2 = api("PUT", url, {"config": {"ingress": rules}})
     if r2.get("success"):
-        ok(f"Ingress set: {ssh_host} → :22, {term_host} → :7681")
+        ok(f"Ingress set: {ssh_host} -> ssh://localhost:22")
+        if ssh_aud:
+            ok(f"Access JWT validation enabled (team: {team_name})")
         ok("cloudflared on the home machine will pick this up automatically.")
     else:
         warn(f"Ingress update failed: {r2.get('errors')}")
@@ -529,7 +497,7 @@ def step_ingress(acct_id, tunnel_id, subdomain):
 #  Step 7 – CF Access (optional)
 # ═════════════════════════════════════════════════════════════════════════════
 def step_access(acct_id, subdomain, emails):
-    hdr("Step 7: CF Zero Trust Access (OTP email auth)")
+    hdr("Step 7: CF Zero Trust Access (OTP email + browser SSH + short-lived certs)")
     if not emails:
         print(f"  {D}Skipped (no emails provided).{X}")
         return
@@ -538,8 +506,7 @@ def step_access(acct_id, subdomain, emails):
     spec = importlib.util.spec_from_file_location("sca", SCRIPT_DIR/"setup_cf_access.py")
     mod  = importlib.util.module_from_spec(spec)
     mod.ACCT       = acct_id
-    mod.PORTAL_URL = f"portal.{subdomain}.workers.dev"
-    mod.TERM_URL   = f"term.{subdomain}.workers.dev"
+    mod.SSH_HOST   = f"ssh.{subdomain}.workers.dev"
     mod.CF_TOKEN   = _TOKEN
     spec.loader.exec_module(mod)
 
@@ -548,11 +515,24 @@ def step_access(acct_id, subdomain, emails):
         warn("Zero Trust org setup failed. Skipping Access policies.")
         warn("Make sure token has 'Zero Trust Edit' permission.")
         return
+
+    team_name = org.get("auth_domain", "").replace(".cloudflareaccess.com", "")
     mod.ensure_otp_idp()
-    for host, name in [(mod.PORTAL_URL, "SSH Portal"), (mod.TERM_URL, "SSH Terminal")]:
-        app_id = mod.ensure_app(host, name)
-        if app_id:
-            mod.ensure_policy(app_id, emails)
+
+    # SSH app (type "ssh" — browser-rendered terminal + short-lived certs)
+    ssh_app_id, ssh_aud = mod.ensure_app(
+        mod.SSH_HOST, "SSH Browser Terminal", app_type="ssh", session_duration="24h")
+    if ssh_app_id:
+        mod.ensure_policy(ssh_app_id, emails)
+        ssh_ca = mod.ensure_ssh_ca(ssh_app_id)
+        if ssh_ca:
+            save_config({
+                "ssh_ca_public_key": ssh_ca,
+                "ssh_app_aud":       ssh_aud,
+                "team_name":         team_name,
+            })
+            ok("SSH short-lived certificate CA generated and saved")
+
     ok("CF Access configured.")
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -701,11 +681,11 @@ def _download_go_toolchain() -> str | None:
 
 def _build_tsnet(go_exe: str) -> bool:
     """Download latest tailscale and build tsnet.exe."""
-    tsnet_src = SCRIPT_DIR / "tsnet-src"
+    tsnet_src = REPO_ROOT / "tsnet"
     tsnet_exe = BIN_DIR / "tsnet.exe"
 
     if not tsnet_src.exists() or not (tsnet_src / "main.go").exists():
-        warn("tsnet-src/main.go not found. Cannot build.")
+        warn("tsnet/main.go not found. Cannot build.")
         return False
 
     _go_env = os.environ.copy()
@@ -768,20 +748,14 @@ def step_build_tsnet():
 # ═════════════════════════════════════════════════════════════════════════════
 def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
     hdr("Saving configuration")
-    ssh_host    = f"ssh.{subdomain}.workers.dev"
-    portal_host = f"portal.{subdomain}.workers.dev"
-    term_host   = f"term.{subdomain}.workers.dev"
+    ssh_host = f"ssh.{subdomain}.workers.dev"
 
-    # ts_relay_url is derived from subdomain here; step_ts_relay will
-    # overwrite it with the confirmed URL after successful deploy.
     cfg = {
         "account_id":   acct_id,
         "subdomain":    subdomain,
         "tunnel_id":    tunnel_id,
         "kv_ns_id":     kv_ns_id,
         "ssh_host":     ssh_host,
-        "portal_host":  portal_host,
-        "term_host":    term_host,
     }
     if tunnel_tok:
         cfg["tunnel_token"] = tunnel_tok
@@ -800,58 +774,654 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
     ok(f"cf_config.txt updated: CF_HOST={ssh_host}")
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  Generate standalone installers (host + client, all platforms)
+# ═════════════════════════════════════════════════════════════════════════════
+def generate_installers(subdomain):
+    """Generate self-contained installer scripts in installers/ (gitignored).
+
+    Generates 4 files with self-documenting names:
+      keys/home_linux_mac.sh  — Run on home machine (Linux/Mac) — needs sudo
+      keys/home_windows.bat   — Run on home machine (Windows)   — needs admin
+      keys/work_linux_mac.sh  — Run on work machine (Linux/Mac) — no admin
+      keys/work_windows.bat   — Run on work machine (Windows)   — no admin
+
+    All Windows files are pure .bat -- works when GPO/AppLocker blocks .ps1.
+    Token + SSH CA key are baked in — no arguments needed.
+    """
+    from config import get_config
+    cfg = get_config()
+    tunnel_tok = cfg.get("tunnel_token", "")
+    ssh_ca_key = cfg.get("ssh_ca_public_key", "")
+    ssh_host   = f"ssh.{subdomain}.workers.dev"
+
+    if not tunnel_tok:
+        warn("No tunnel token in config -- cannot generate installers")
+        return None
+
+    inst_dir = REPO_ROOT / "installers"
+    inst_dir.mkdir(exist_ok=True)
+    generated = {}
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  HOME machine: Bash installer (Linux + macOS)
+    # ══════════════════════════════════════════════════════════════════════
+    host_sh = f'''#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge -- HOME machine setup (auto-generated -- do not commit)
+#  Run this on the machine you want to SSH INTO (your home server).
+#  For: Linux and macOS
+#
+#  Run:  chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+TOKEN="{tunnel_tok}"
+SSH_CA_KEY="{ssh_ca_key}"
+SSH_HOST="{ssh_host}"
+
+G='\\033[0;32m'; Y='\\033[1;33m'; R='\\033[0;31m'; X='\\033[0m'
+ok()   {{ echo -e "${{G}}[OK]${{X}}   $*"; }}
+info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
+err()  {{ echo -e "${{R}}[!!]${{X}}   $*" >&2; }}
+
+IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
+
+echo ""
+echo "  ================================================"
+echo "    erebus-edge -- Home Machine Setup (Linux/Mac)"
+echo "  ================================================"
+echo ""
+
+# ── 1. Ensure SSH server is running ───────────────────────────────
+if $IS_MAC; then
+    # macOS: check Remote Login
+    if systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
+        ok "Remote Login (SSH) is enabled"
+    else
+        info "Enabling Remote Login (SSH)..."
+        sudo systemsetup -setremotelogin on 2>/dev/null || {{
+            err "Could not enable Remote Login automatically"
+            err "Enable manually: System Settings -> General -> Sharing -> Remote Login"
+        }}
+    fi
+else
+    # Linux: check sshd
+    if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
+        ok "SSH server is running"
+    else
+        info "Starting SSH server..."
+        sudo systemctl enable --now ssh 2>/dev/null || sudo systemctl enable --now sshd 2>/dev/null || {{
+            err "Could not start sshd. Install: sudo apt install openssh-server"
+        }}
+    fi
+fi
+
+# ── 2. Install cloudflared ────────────────────────────────────────
+if command -v cloudflared &>/dev/null; then
+    ok "cloudflared already installed"
+else
+    info "Installing cloudflared..."
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)        CF_ARCH="amd64" ;;
+        aarch64|arm64) CF_ARCH="arm64" ;;
+        armv7*)        CF_ARCH="arm" ;;
+        *)             err "Unknown arch: $ARCH"; exit 1 ;;
+    esac
+    if $IS_MAC; then
+        if command -v brew &>/dev/null; then
+            brew install cloudflare/cloudflare/cloudflared 2>/dev/null && ok "Installed via brew" || true
+        fi
+        if ! command -v cloudflared &>/dev/null; then
+            curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${{CF_ARCH}}.tgz" -o /tmp/cf.tgz
+            tar xzf /tmp/cf.tgz -C /usr/local/bin/ cloudflared 2>/dev/null || tar xzf /tmp/cf.tgz -C /tmp/ && sudo mv /tmp/cloudflared /usr/local/bin/
+            sudo chmod +x /usr/local/bin/cloudflared
+            rm -f /tmp/cf.tgz
+            ok "cloudflared binary installed"
+        fi
+    else
+        if command -v apt-get &>/dev/null; then
+            curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \\
+                | sudo tee /etc/apt/sources.list.d/cloudflared.list
+            sudo apt-get update -qq && sudo apt-get install -y cloudflared 2>/dev/null && ok "Installed via apt"
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y cloudflared 2>/dev/null && ok "Installed via dnf"
+        fi
+        if ! command -v cloudflared &>/dev/null; then
+            sudo curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" \\
+                -o /usr/local/bin/cloudflared
+            sudo chmod +x /usr/local/bin/cloudflared
+            ok "cloudflared binary installed"
+        fi
+    fi
+fi
+
+# ── 3. Register tunnel service ────────────────────────────────────
+info "Installing cloudflared tunnel service..."
+if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
+    ok "Tunnel service installed and started"
+else
+    if pgrep -x cloudflared &>/dev/null; then
+        info "Reinstalling with current token..."
+        sudo cloudflared service uninstall 2>/dev/null || true
+        sudo cloudflared service install "$TOKEN"
+        ok "Service reinstalled"
+    else
+        err "Service install failed"
+    fi
+fi
+
+# ── 4. SSH CA trust (short-lived certificates) ────────────────────
+if [[ -n "$SSH_CA_KEY" ]]; then
+    info "Configuring sshd to trust CF SSH CA..."
+    if $IS_MAC; then
+        CA_PATH="/etc/ssh/ca.pub"
+        SSHD_CFG="/etc/ssh/sshd_config"
+    else
+        CA_PATH="/etc/ssh/ca.pub"
+        SSHD_CFG="/etc/ssh/sshd_config"
+    fi
+    echo "$SSH_CA_KEY" | sudo tee "$CA_PATH" >/dev/null
+    sudo chmod 600 "$CA_PATH"
+    ok "CA key written to $CA_PATH"
+
+    if grep -q "TrustedUserCAKeys" "$SSHD_CFG" 2>/dev/null; then
+        ok "sshd_config already has TrustedUserCAKeys"
+    else
+        printf '\\n# Cloudflare Access short-lived SSH certificates\\nTrustedUserCAKeys %s\\n' "$CA_PATH" \\
+            | sudo tee -a "$SSHD_CFG" >/dev/null
+        ok "TrustedUserCAKeys added to sshd_config"
+    fi
+
+    # Restart sshd
+    if $IS_MAC; then
+        sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        sudo launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        ok "sshd restarted (launchd)"
+    else
+        sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null
+        ok "sshd restarted"
+    fi
+else
+    info "No SSH CA key -- short-lived certs not configured"
+fi
+
+# ── 5. Verify ─────────────────────────────────────────────────────
+info "Waiting for tunnel..."
+sleep 5
+if pgrep -x cloudflared &>/dev/null; then
+    ok "cloudflared is running"
+else
+    err "cloudflared may not be running -- check: sudo systemctl status cloudflared"
+fi
+
+echo ""
+echo "  ================================================"
+echo "    Done!  Home machine is ready."
+echo "  ================================================"
+echo ""
+echo "  Now run the WORK machine installer on the machine"
+echo "  you connect FROM, then SSH via:"
+echo "    Browser : https://$SSH_HOST"
+echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+echo ""
+'''
+    (inst_dir /"home_linux_mac.sh").write_text(host_sh)
+    generated["home_sh"] = inst_dir /"home_linux_mac.sh"
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  HOME machine: Batch installer (Windows) — pure .bat, no PowerShell
+    # ══════════════════════════════════════════════════════════════════════
+    host_bat = f'''@echo off
+setlocal enabledelayedexpansion
+REM ═══════════════════════════════════════════════════════════════════
+REM  erebus-edge -- HOME machine setup for Windows (auto-generated)
+REM  Run this on the machine you want to SSH INTO (your home server).
+REM  Pure batch -- works even when PowerShell is blocked by GPO.
+REM
+REM  Right-click -> Run as Administrator
+REM ═══════════════════════════════════════════════════════════════════
+
+set "TOKEN={tunnel_tok}"
+set "SSH_CA_KEY={ssh_ca_key}"
+set "SSH_HOST={ssh_host}"
+
+echo.
+echo   ================================================
+echo     erebus-edge -- Home Machine Setup (Windows)
+echo   ================================================
+echo.
+
+REM ── 1. Ensure OpenSSH Server is installed + running ─────────────
+echo   [..]  Checking OpenSSH Server...
+sc query sshd >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  OpenSSH Server service exists
+) else (
+    echo   [..]  Installing OpenSSH Server via DISM...
+    dism /Online /Add-Capability /CapabilityName:OpenSSH.Server~~~~0.0.1.0 /NoRestart >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  OpenSSH Server installed
+    ) else (
+        echo   [!!]  DISM install failed -- install OpenSSH Server manually
+        echo         Settings -^> Apps -^> Optional Features -^> OpenSSH Server
+    )
+)
+net start sshd >nul 2>&1
+sc config sshd start=auto >nul 2>&1
+echo   [OK]  sshd service running (auto-start enabled)
+
+REM ── 2. Download cloudflared ─────────────────────────────────────
+set "CF_DIR=%ProgramFiles%\\cloudflared"
+set "CF_PATH=%CF_DIR%\\cloudflared.exe"
+
+where cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared already in PATH
+    for /f "delims=" %%i in ('where cloudflared') do set "CF_PATH=%%i"
+    goto :cf_done
+)
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared found at %CF_PATH%
+    goto :cf_done
+)
+
+echo   [..]  Downloading cloudflared...
+if not exist "%CF_DIR%" mkdir "%CF_DIR%"
+set "CF_URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+
+REM Try curl first (Windows 10 1803+), then certutil, then bitsadmin
+curl.exe -fsSL -o "%CF_PATH%" "%CF_URL%" 2>nul
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via curl
+    goto :cf_done
+)
+certutil -urlcache -split -f "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via certutil
+    goto :cf_done
+)
+bitsadmin /transfer cf /download /priority high "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via bitsadmin
+    goto :cf_done
+)
+echo   [!!]  Could not download cloudflared. Download manually:
+echo         %CF_URL%
+echo         Place at: %CF_PATH%
+goto :cf_done
+
+:cf_done
+
+REM ── 3. Install tunnel service ───────────────────────────────────
+echo   [..]  Installing cloudflared tunnel service...
+"%CF_PATH%" service install %TOKEN% >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared service installed
+) else (
+    REM May already be installed -- try uninstall + reinstall
+    "%CF_PATH%" service uninstall >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    "%CF_PATH%" service install %TOKEN% >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  cloudflared service reinstalled
+    ) else (
+        echo   [!!]  Service install failed -- ensure running as Administrator
+    )
+)
+
+REM ── 4. SSH CA trust (short-lived certificates) ──────────────────
+if "%SSH_CA_KEY%"=="" (
+    echo   [..]  No SSH CA key -- short-lived certs not configured
+    goto :ca_done
+)
+
+echo   [..]  Configuring sshd to trust CF SSH CA...
+set "SSH_DIR=%ProgramData%\\ssh"
+set "CA_PATH=%SSH_DIR%\\ca.pub"
+set "SSHD_CFG=%SSH_DIR%\\sshd_config"
+
+echo %SSH_CA_KEY%> "%CA_PATH%"
+echo   [OK]  CA key written to %CA_PATH%
+
+if not exist "%SSHD_CFG%" (
+    echo   [!!]  sshd_config not found at %SSHD_CFG%
+    goto :ca_done
+)
+
+findstr /C:"TrustedUserCAKeys" "%SSHD_CFG%" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  sshd_config already has TrustedUserCAKeys
+) else (
+    echo.>> "%SSHD_CFG%"
+    echo # Cloudflare Access short-lived SSH certificates>> "%SSHD_CFG%"
+    echo TrustedUserCAKeys %CA_PATH%>> "%SSHD_CFG%"
+    echo   [OK]  TrustedUserCAKeys added to sshd_config
+)
+
+net stop sshd >nul 2>&1
+net start sshd >nul 2>&1
+echo   [OK]  sshd restarted with CF CA trust
+
+:ca_done
+
+REM ── 5. Verify ───────────────────────────────────────────────────
+echo   [..]  Waiting for tunnel...
+timeout /t 5 /nobreak >nul
+sc query cloudflared | findstr /C:"RUNNING" >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared is running
+) else (
+    echo   [!!]  cloudflared may not be running -- check: sc query cloudflared
+)
+
+echo.
+echo   ================================================
+echo     Done!  Home machine is ready.
+echo   ================================================
+echo.
+echo   Now run the WORK machine installer on the machine
+echo   you connect FROM, then SSH via:
+echo     Browser : https://%SSH_HOST%
+echo     CLI     : ssh YOUR_USER@%SSH_HOST%
+echo.
+endlocal
+'''
+    (inst_dir /"home_windows.bat").write_text(host_bat)
+    generated["home_bat"] = inst_dir / "home_windows.bat"
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  WORK machine: Bash installer (Mac + Linux)
+    # ══════════════════════════════════════════════════════════════════════
+    client_sh = f'''#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge -- WORK machine setup (auto-generated -- do not commit)
+#  Run this on the machine you connect FROM (your work/office machine).
+#  For: Linux and macOS.  No admin/sudo required.
+#
+#  Run:  chmod +x work_linux_mac.sh && ./work_linux_mac.sh
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+SSH_HOST="{ssh_host}"
+INSTALL_DIR="${{HOME}}/.erebus-edge"
+
+G='\\033[0;32m'; Y='\\033[1;33m'; X='\\033[0m'
+ok()   {{ echo -e "${{G}}[OK]${{X}}   $*"; }}
+info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
+
+echo ""
+echo "  ================================================"
+echo "    erebus-edge -- Work Machine Setup (Linux/Mac)"
+echo "  ================================================"
+echo ""
+
+mkdir -p "$INSTALL_DIR"
+
+# ── 1. Download cloudflared (portable, no admin) ──────────────────
+CF_BIN="$INSTALL_DIR/cloudflared"
+if command -v cloudflared &>/dev/null; then
+    ok "cloudflared already in PATH"
+    CF_BIN=$(command -v cloudflared)
+elif [[ -x "$CF_BIN" ]]; then
+    ok "cloudflared already at $CF_BIN"
+else
+    ARCH=$(uname -m)
+    OS=$(uname -s | tr A-Z a-z)
+    case "$ARCH" in
+        x86_64)        CF_ARCH="amd64" ;;
+        aarch64|arm64) CF_ARCH="arm64" ;;
+        armv7*)        CF_ARCH="arm" ;;
+        *)             CF_ARCH="amd64" ;;
+    esac
+    if [[ "$OS" == "darwin" ]]; then
+        info "Downloading cloudflared for macOS ($CF_ARCH)..."
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${{CF_ARCH}}.tgz" -o /tmp/cf.tgz
+        tar xzf /tmp/cf.tgz -C "$INSTALL_DIR/"
+        rm -f /tmp/cf.tgz
+    else
+        info "Downloading cloudflared for Linux ($CF_ARCH)..."
+        curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" -o "$CF_BIN"
+    fi
+    chmod +x "$CF_BIN"
+    ok "cloudflared installed to $CF_BIN"
+fi
+
+# ── 2. Create connect script ─────────────────────────────────────
+CONNECT="$INSTALL_DIR/connect.sh"
+cat > "$CONNECT" << 'SCRIPT'
+#!/usr/bin/env bash
+SSH_HOST="__SSH_HOST__"
+CF_BIN="__CF_BIN__"
+read -rp "  Username on remote host: " USER
+ssh -o "ProxyCommand=$CF_BIN access ssh --hostname $SSH_HOST" "$USER@$SSH_HOST"
+SCRIPT
+sed -i.bak "s|__SSH_HOST__|$SSH_HOST|g; s|__CF_BIN__|$CF_BIN|g" "$CONNECT" && rm -f "${{CONNECT}}.bak"
+chmod +x "$CONNECT"
+ok "Created $CONNECT"
+
+# ── 3. SSH config entry ──────────────────────────────────────────
+SSH_CFG="$HOME/.ssh/config"
+mkdir -p "$HOME/.ssh" && chmod 700 "$HOME/.ssh"
+if grep -q "$SSH_HOST" "$SSH_CFG" 2>/dev/null; then
+    ok "SSH config already has $SSH_HOST entry"
+else
+    cat >> "$SSH_CFG" << EOF
+
+# erebus-edge -- CF Tunnel SSH
+Host $SSH_HOST
+    ProxyCommand $CF_BIN access ssh --hostname %h
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+EOF
+    chmod 600 "$SSH_CFG"
+    ok "Added SSH config entry for $SSH_HOST"
+    info "Connect with:  ssh YOUR_USER@$SSH_HOST"
+fi
+
+echo ""
+echo "  ================================================"
+echo "    Done!  Work machine is ready."
+echo "  ================================================"
+echo ""
+echo "  Connect to your home machine:"
+echo "    Browser : https://$SSH_HOST  (email OTP login)"
+echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+echo "    Script  : $CONNECT"
+echo ""
+'''
+    (inst_dir /"work_linux_mac.sh").write_text(client_sh)
+    generated["work_sh"] = inst_dir / "work_linux_mac.sh"
+
+    # ══════════════════════════════════════════════════════════════════════
+    #  WORK machine: Batch installer (Windows — no admin, no PowerShell)
+    # ══════════════════════════════════════════════════════════════════════
+    client_bat = f'''@echo off
+setlocal enabledelayedexpansion
+REM ═══════════════════════════════════════════════════════════════════
+REM  erebus-edge -- WORK machine setup for Windows (auto-generated)
+REM  Run this on the machine you connect FROM (your work/office machine).
+REM  Pure batch -- works even when PowerShell is blocked by GPO.
+REM  No admin needed. Downloads cloudflared to your user directory.
+REM
+REM  Double-click or run:  work_windows.bat
+REM ═══════════════════════════════════════════════════════════════════
+
+set "SSH_HOST={ssh_host}"
+set "INSTALL_DIR=%LOCALAPPDATA%\\erebus-edge"
+
+echo.
+echo   ================================================
+echo     erebus-edge -- Work Machine Setup (Windows)
+echo   ================================================
+echo.
+
+if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
+
+REM ── 1. Download cloudflared (portable, no admin) ────────────────
+set "CF_PATH=%INSTALL_DIR%\\cloudflared.exe"
+
+where cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [OK]  cloudflared already in PATH
+    for /f "delims=" %%i in ('where cloudflared') do set "CF_PATH=%%i"
+    goto :cf_done
+)
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared already at %CF_PATH%
+    goto :cf_done
+)
+
+echo   [..]  Downloading cloudflared...
+set "CF_URL=https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+
+REM Try curl first (Windows 10 1803+), then certutil, then bitsadmin
+curl.exe -fsSL -o "%CF_PATH%" "%CF_URL%" 2>nul
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via curl
+    goto :cf_done
+)
+certutil -urlcache -split -f "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via certutil
+    goto :cf_done
+)
+bitsadmin /transfer cf /download /priority high "%CF_URL%" "%CF_PATH%" >nul 2>&1
+if exist "%CF_PATH%" (
+    echo   [OK]  cloudflared downloaded via bitsadmin
+    goto :cf_done
+)
+echo   [!!]  Could not download cloudflared automatically.
+echo         Download manually from:
+echo           %CF_URL%
+echo         Save to: %CF_PATH%
+goto :cf_done
+
+:cf_done
+
+REM ── 2. Create connect.bat ───────────────────────────────────────
+set "CONNECT=%INSTALL_DIR%\\connect.bat"
+(
+    echo @echo off
+    echo set /p RUSER=Username on remote host:
+    echo "%CF_PATH%" access ssh --hostname %SSH_HOST%
+    echo ssh -o "ProxyCommand=""%CF_PATH%"" access ssh --hostname %SSH_HOST%" %%RUSER%%@%SSH_HOST%
+) > "%CONNECT%"
+echo   [OK]  Created %CONNECT%
+
+REM ── 3. SSH config entry ─────────────────────────────────────────
+set "SSH_DIR=%USERPROFILE%\\.ssh"
+set "SSH_CFG=%SSH_DIR%\\config"
+if not exist "%SSH_DIR%" mkdir "%SSH_DIR%"
+
+if exist "%SSH_CFG%" (
+    findstr /C:"%SSH_HOST%" "%SSH_CFG%" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  SSH config already has %SSH_HOST% entry
+        goto :ssh_done
+    )
+)
+
+echo.>> "%SSH_CFG%"
+echo # erebus-edge -- CF Tunnel SSH>> "%SSH_CFG%"
+echo Host %SSH_HOST%>> "%SSH_CFG%"
+echo     ProxyCommand "%CF_PATH%" access ssh --hostname %%h>> "%SSH_CFG%"
+echo     StrictHostKeyChecking no>> "%SSH_CFG%"
+echo     UserKnownHostsFile NUL>> "%SSH_CFG%"
+echo   [OK]  Added SSH config entry for %SSH_HOST%
+echo   [..]  Connect with:  ssh YOUR_USER@%SSH_HOST%
+
+:ssh_done
+
+echo.
+echo   ================================================
+echo     Done!  Work machine is ready.
+echo   ================================================
+echo.
+echo   Connect to your home machine:
+echo     Browser : https://%SSH_HOST%  (email OTP login)
+echo     CLI     : ssh YOUR_USER@%SSH_HOST%
+echo     Script  : %CONNECT%
+echo.
+endlocal
+'''
+    (inst_dir /"work_windows.bat").write_text(client_bat)
+    generated["work_bat"] = inst_dir / "work_windows.bat"
+
+    for name, path in generated.items():
+        ok(f"Generated: {path.name}")
+
+    return generated
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Summary
 # ═════════════════════════════════════════════════════════════════════════════
 def print_summary(subdomain, emails, tsnet_ok=False):
     from config import get_config
     cfg = get_config()
-    tunnel_tok = cfg.get("tunnel_token", "")
+    tunnel_tok  = cfg.get("tunnel_token", "")
+    ssh_ca_key  = cfg.get("ssh_ca_public_key", "")
+
+    # Generate standalone installers
+    installers = None
+    if tunnel_tok:
+        installers = generate_installers(subdomain)
 
     print(f"\n{'═'*58}")
     print(f"  {G}{B}Bootstrap complete!{X}")
     print(f"{'═'*58}")
     print(f"""
-  Your SSH Portal:
-    Portal    : {C}https://portal.{subdomain}.workers.dev{X}
-    Terminal  : {C}https://term.{subdomain}.workers.dev{X}
-    SSH host  : {C}ssh.{subdomain}.workers.dev{X}
-    TS relay  : {C}https://ts-relay.{subdomain}.workers.dev{X}
+  Your endpoints:
+    Browser SSH : {C}https://ssh.{subdomain}.workers.dev{X}  (CF Access login)
+    TS relay    : {C}https://ts-relay.{subdomain}.workers.dev{X}  (Tailscale bypass)
 """)
     if emails:
-        print(f"  CF Access (OTP email): {', '.join(emails)}\n")
+        print(f"  CF Access (OTP email): {', '.join(emails)}")
+    if ssh_ca_key:
+        print(f"  Short-lived SSH certs: {G}ENABLED{X}")
+    print()
 
-    tsnet_note = (f"  {G}✓{X} tsnet.exe built — run:  bin\\tsnet.exe up"
+    tsnet_note = (f"  {G}[ok]{X} tsnet.exe built -- run:  bin\\tsnet.exe up"
                   if tsnet_ok else
-                  f"  {Y}!{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
+                  f"  {Y}[!!]{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
 
-    if tunnel_tok:
-        home_sh_cmd  = f"bash home_setup.sh {tunnel_tok}"
-        home_py_cmd  = (f"python3 home_setup.py \\\n"
-                        f"    --token {tunnel_tok} \\\n"
-                        f"    --portal-url https://portal.{subdomain}.workers.dev \\\n"
-                        f"    --term-url   https://term.{subdomain}.workers.dev \\\n"
-                        f"    --ssh-host   ssh.{subdomain}.workers.dev")
+    if installers:
+        print(f"""  {G}{B}What to do next:{X}
+
+  {C}STEP 1 -- Set up your HOME machine{X} (the one you SSH into)
+  Pick the file that matches your home machine's OS:
+
+    {Y}Linux / Mac:{X}  {installers['home_sh']}
+                  chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh
+
+    {Y}Windows:{X}      {installers['home_bat']}
+                  Right-click -> Run as Administrator
+
+  {C}STEP 2 -- Set up your WORK machine{X} (the one you connect from)
+  Pick the file that matches your work machine's OS:
+
+    {Y}Linux / Mac:{X}  {installers['work_sh']}
+                  chmod +x work_linux_mac.sh && ./work_linux_mac.sh
+
+    {Y}Windows:{X}      {installers['work_bat']}
+                  Double-click to run (no admin needed)
+
+  All files in installers/ (gitignored). Token + SSH CA baked in.
+  Windows .bat files work even when GPO blocks PowerShell.
+
+  {C}STEP 3 -- Connect{X}
+    Browser : https://ssh.{subdomain}.workers.dev  (email OTP login)
+    CLI     : ssh YOUR_USER@ssh.{subdomain}.workers.dev
+""")
     else:
-        home_sh_cmd  = "bash home_setup.sh <TOKEN>   # token in keys/portal_config.json"
-        home_py_cmd  = "python3 home_setup.py --token <TOKEN>"
+        print(f"""  After setting up your home machine:
+    Browser : https://ssh.{subdomain}.workers.dev  (email OTP login)
+    CLI     : ssh YOUR_USER@ssh.{subdomain}.workers.dev
+""")
 
-    print(f"""  Next steps:
-
-  1. On your HOME machine (Linux):
-       {home_sh_cmd}
-
-     Or cross-platform (Mac / Linux / Windows):
-       {home_py_cmd}
-
-  2. Browser portal:
-       https://portal.{subdomain}.workers.dev
-     Log in with your CF token → add endpoint → Connect.
-
-  3. CLI SSH (cloudflared):
-       connect.bat   (cmd)
-       ./connect.sh  (Git Bash)
-
-  4. Tailscale (works even without home-ssh):
+    print(f"""  Tailscale (optional, works independently):
 {tsnet_note}
      Peers:  bin\\tsnet.exe status
      SSH:    ssh -o "ProxyCommand=bin\\tsnet.exe proxy %h %p" user@peer

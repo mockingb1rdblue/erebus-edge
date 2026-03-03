@@ -21,10 +21,7 @@ Routes handled by the Worker:
 import json, sys, urllib.request, urllib.error, ssl
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 from config import require, get_config, save_config
-
-SCRIPT_DIR = Path(__file__).parent
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
