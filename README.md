@@ -34,7 +34,7 @@ corporate proxy or SSL inspection.
 ### 1. Run bootstrap on any machine with Python
 
 ```
-python bootstrap.py --email you@example.com
+python src/bootstrap.py --email you@example.com
 ```
 
 This opens your browser to log in to Cloudflare, then automatically:
@@ -43,7 +43,7 @@ This opens your browser to log in to Cloudflare, then automatically:
 - Deploys the SSH Worker
 - Sets up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
 - Optionally builds `bin/tsnet.exe` (userspace Tailscale)
-- **Generates standalone installer scripts** in `keys/`
+- **Generates standalone installer scripts** in `installers/`
 
 Flags:
 
@@ -56,23 +56,23 @@ Flags:
 
 ### 2. Set up your home machine
 
-Copy the installer that matches your home machine's OS from `keys/`:
+Copy the installer that matches your home machine's OS from `installers/`:
 
 | Home machine OS | File | How to run |
 |-----------------|------|------------|
-| Linux / Mac | `keys/home_linux_mac.sh` | `chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh` |
-| Windows | `keys/home_windows.bat` | Right-click -> Run as Administrator |
+| Linux / Mac | `installers/home_linux_mac.sh` | `chmod +x home_linux_mac.sh && sudo ./home_linux_mac.sh` |
+| Windows | `installers/home_windows.bat` | Right-click -> Run as Administrator |
 
 These are standalone -- token + SSH CA key baked in, no arguments needed.
 
 ### 3. Set up your work machine
 
-Copy the installer that matches your work machine's OS from `keys/`:
+Copy the installer that matches your work machine's OS from `installers/`:
 
 | Work machine OS | File | How to run |
 |-----------------|------|------------|
-| Linux / Mac | `keys/work_linux_mac.sh` | `chmod +x work_linux_mac.sh && ./work_linux_mac.sh` |
-| Windows | `keys/work_windows.bat` | Double-click (no admin needed) |
+| Linux / Mac | `installers/work_linux_mac.sh` | `chmod +x work_linux_mac.sh && ./work_linux_mac.sh` |
+| Windows | `installers/work_windows.bat` | Double-click (no admin needed) |
 
 Windows `.bat` files work even when GPO blocks PowerShell.
 
@@ -91,8 +91,8 @@ Visit `https://ssh.SUB.workers.dev` in your browser.
 ### Option B -- CLI SSH (CF Tunnel)
 
 ```bash
-./connect.sh      # Git Bash / Mac / Linux
-connect.bat       # Windows cmd
+src/connect.sh      # Git Bash / Mac / Linux
+src\connect.bat     # Windows cmd
 ```
 
 First run asks for your home username and SSH port, saves to `cf_config.txt`.
@@ -116,26 +116,30 @@ ssh -o "ProxyCommand=bin\tsnet.exe proxy %h %p" user@peer
 ## Project structure
 
 ```
-bootstrap.py              Main entry point -- run this first
-connect.bat / connect.sh  CLI SSH via CF Tunnel (daily use)
+README.md / LICENSE       You are here
 
-lib/                      Internal modules (used by bootstrap.py)
+src/                      All source code
+  bootstrap.py              Main entry point -- run this first
+  connect.bat               CLI SSH (Windows cmd)
+  connect.sh                CLI SSH (bash / Mac / Linux)
   cf_creds.py               DPAPI-encrypted CF token storage
-  config.py                 Config loader (keys/portal_config.json)
+  config.py                 Config loader
   setup_cf_access.py        CF Zero Trust Access + SSH CA setup
   deploy_ts_relay_worker.py Tailscale relay Worker deploy
 
-tsnet/                    Go source for bin/tsnet.exe
+tsnet/                    Go source for bin/tsnet.exe (optional)
   main.go
   go.mod
 
-keys/                     Generated at runtime (gitignored)
+installers/               Generated standalone installers (gitignored)
+  home_linux_mac.sh         Run on home machine (Linux/Mac)
+  home_windows.bat          Run on home machine (Windows)
+  work_linux_mac.sh         Run on work machine (Linux/Mac)
+  work_windows.bat          Run on work machine (Windows)
+
+keys/                     Secrets + config (gitignored)
   portal_config.json        Account IDs, subdomain, tunnel ID
   cf_creds.dpapi            DPAPI-encrypted CF API token
-  home_linux_mac.sh         Home machine installer (Linux/Mac)
-  home_windows.bat          Home machine installer (Windows)
-  work_linux_mac.sh         Work machine installer (Linux/Mac)
-  work_windows.bat          Work machine installer (Windows)
 ```
 
 ---

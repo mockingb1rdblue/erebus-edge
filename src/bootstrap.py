@@ -11,7 +11,7 @@ What it does:
   3. Set up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
   4. Deploy ts-relay Worker (Tailscale bypass, optional)
   5. Build tsnet.exe (userspace Tailscale, optional)
-  6. Generate standalone installer scripts in keys/
+  6. Generate standalone installer scripts in installers/
 
 Usage:
   python bootstrap.py                  # full wizard
@@ -25,15 +25,16 @@ import argparse, base64, getpass, hashlib, json, os, re, shutil, ssl, subprocess
 import urllib.request, urllib.error, urllib.parse
 from pathlib import Path
 
-from lib.config import get_config, save_config, CFG_FILE
-import lib.cf_creds as _creds_mod
+from config import get_config, save_config, CFG_FILE
+import cf_creds as _creds_mod
 
-SCRIPT_DIR   = Path(__file__).parent
-BIN_DIR      = SCRIPT_DIR / "bin"
-KEYS_DIR     = SCRIPT_DIR / "keys"
+SCRIPT_DIR   = Path(__file__).parent          # src/
+REPO_ROOT    = SCRIPT_DIR.parent              # project root
+BIN_DIR      = REPO_ROOT / "bin"
+KEYS_DIR     = REPO_ROOT / "keys"
 CF_CERT_PATH = KEYS_DIR / "cf_login.pem"
 CLOUDFLARED  = str(BIN_DIR / "cloudflared.exe")
-CF_CFG_TXT   = SCRIPT_DIR / "cf_config.txt"
+CF_CFG_TXT   = REPO_ROOT / "cf_config.txt"
 
 PORTAL_TOKEN_NAME = "ssh-portal"
 REQUIRED_PERMS = [
@@ -502,7 +503,7 @@ def step_access(acct_id, subdomain, emails):
         return
 
     import importlib.util
-    spec = importlib.util.spec_from_file_location("sca", SCRIPT_DIR/"lib"/"setup_cf_access.py")
+    spec = importlib.util.spec_from_file_location("sca", SCRIPT_DIR/"setup_cf_access.py")
     mod  = importlib.util.module_from_spec(spec)
     mod.ACCT       = acct_id
     mod.SSH_HOST   = f"ssh.{subdomain}.workers.dev"
@@ -540,7 +541,7 @@ def step_access(acct_id, subdomain, emails):
 def step_ts_relay(acct_id, subdomain) -> str | None:
     hdr("Step 8: Deploy ts-relay Worker (Tailscale bypass)")
     import importlib.util
-    spec = importlib.util.spec_from_file_location("dtrw", SCRIPT_DIR / "lib" / "deploy_ts_relay_worker.py")
+    spec = importlib.util.spec_from_file_location("dtrw", SCRIPT_DIR / "deploy_ts_relay_worker.py")
     mod  = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
 
@@ -680,7 +681,7 @@ def _download_go_toolchain() -> str | None:
 
 def _build_tsnet(go_exe: str) -> bool:
     """Download latest tailscale and build tsnet.exe."""
-    tsnet_src = SCRIPT_DIR / "tsnet"
+    tsnet_src = REPO_ROOT / "tsnet"
     tsnet_exe = BIN_DIR / "tsnet.exe"
 
     if not tsnet_src.exists() or not (tsnet_src / "main.go").exists():
@@ -776,7 +777,7 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
 #  Generate standalone installers (host + client, all platforms)
 # ═════════════════════════════════════════════════════════════════════════════
 def generate_installers(subdomain):
-    """Generate self-contained installer scripts in keys/ (gitignored).
+    """Generate self-contained installer scripts in installers/ (gitignored).
 
     Generates 4 files with self-documenting names:
       keys/home_linux_mac.sh  — Run on home machine (Linux/Mac) — needs sudo
@@ -787,7 +788,7 @@ def generate_installers(subdomain):
     All Windows files are pure .bat -- works when GPO/AppLocker blocks .ps1.
     Token + SSH CA key are baked in — no arguments needed.
     """
-    from lib.config import get_config
+    from config import get_config
     cfg = get_config()
     tunnel_tok = cfg.get("tunnel_token", "")
     ssh_ca_key = cfg.get("ssh_ca_public_key", "")
@@ -797,8 +798,8 @@ def generate_installers(subdomain):
         warn("No tunnel token in config -- cannot generate installers")
         return None
 
-    keys_dir = SCRIPT_DIR / "keys"
-    keys_dir.mkdir(exist_ok=True)
+    inst_dir = REPO_ROOT / "installers"
+    inst_dir.mkdir(exist_ok=True)
     generated = {}
 
     # ══════════════════════════════════════════════════════════════════════
@@ -966,8 +967,8 @@ echo "    Browser : https://$SSH_HOST"
 echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
 echo ""
 '''
-    (keys_dir / "home_linux_mac.sh").write_text(host_sh)
-    generated["home_sh"] = keys_dir / "home_linux_mac.sh"
+    (inst_dir /"home_linux_mac.sh").write_text(host_sh)
+    generated["home_sh"] = inst_dir /"home_linux_mac.sh"
 
     # ══════════════════════════════════════════════════════════════════════
     #  HOME machine: Batch installer (Windows) — pure .bat, no PowerShell
@@ -1127,8 +1128,8 @@ echo     CLI     : ssh YOUR_USER@%SSH_HOST%
 echo.
 endlocal
 '''
-    (keys_dir / "home_windows.bat").write_text(host_bat)
-    generated["home_bat"] = keys_dir / "home_windows.bat"
+    (inst_dir /"home_windows.bat").write_text(host_bat)
+    generated["home_bat"] = inst_dir / "home_windows.bat"
 
     # ══════════════════════════════════════════════════════════════════════
     #  WORK machine: Bash installer (Mac + Linux)
@@ -1230,8 +1231,8 @@ echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
 echo "    Script  : $CONNECT"
 echo ""
 '''
-    (keys_dir / "work_linux_mac.sh").write_text(client_sh)
-    generated["work_sh"] = keys_dir / "work_linux_mac.sh"
+    (inst_dir /"work_linux_mac.sh").write_text(client_sh)
+    generated["work_sh"] = inst_dir / "work_linux_mac.sh"
 
     # ══════════════════════════════════════════════════════════════════════
     #  WORK machine: Batch installer (Windows — no admin, no PowerShell)
@@ -1345,8 +1346,8 @@ echo     Script  : %CONNECT%
 echo.
 endlocal
 '''
-    (keys_dir / "work_windows.bat").write_text(client_bat)
-    generated["work_bat"] = keys_dir / "work_windows.bat"
+    (inst_dir /"work_windows.bat").write_text(client_bat)
+    generated["work_bat"] = inst_dir / "work_windows.bat"
 
     for name, path in generated.items():
         ok(f"Generated: {path.name}")
@@ -1358,7 +1359,7 @@ endlocal
 #  Summary
 # ═════════════════════════════════════════════════════════════════════════════
 def print_summary(subdomain, emails, tsnet_ok=False):
-    from lib.config import get_config
+    from config import get_config
     cfg = get_config()
     tunnel_tok  = cfg.get("tunnel_token", "")
     ssh_ca_key  = cfg.get("ssh_ca_public_key", "")
@@ -1407,7 +1408,7 @@ def print_summary(subdomain, emails, tsnet_ok=False):
     {Y}Windows:{X}      {installers['work_bat']}
                   Double-click to run (no admin needed)
 
-  All files are in keys/ (gitignored). Token + SSH CA baked in.
+  All files in installers/ (gitignored). Token + SSH CA baked in.
   Windows .bat files work even when GPO blocks PowerShell.
 
   {C}STEP 3 -- Connect{X}
