@@ -1,6 +1,5 @@
 # ── Generated at runtime (user-specific, never commit) ──────────────────────
 keys/                   # CF tokens, config (portal_config.json), DPAPI secrets
-installers/             # standalone installer scripts (token + CA baked in)
 cf_config.txt           # connect.bat/sh saved settings
 
 # ── Environment / secrets ────────────────────────────────────────────────────
