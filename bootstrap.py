@@ -838,6 +838,237 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
     ok(f"cf_config.txt updated: CF_HOST={ssh_host}")
 
 # ═════════════════════════════════════════════════════════════════════════════
+#  Generate standalone home installers
+# ═════════════════════════════════════════════════════════════════════════════
+def generate_home_installers(subdomain):
+    """Generate self-contained installer scripts in keys/ (gitignored).
+
+    These have the tunnel token + SSH CA key baked in so the home machine
+    user just copies one file and runs it — no Python, no repo, no arguments.
+    """
+    from config import get_config
+    cfg = get_config()
+    tunnel_tok = cfg.get("tunnel_token", "")
+    ssh_ca_key = cfg.get("ssh_ca_public_key", "")
+    ssh_host   = f"ssh.{subdomain}.workers.dev"
+
+    if not tunnel_tok:
+        warn("No tunnel token in config -- cannot generate installers")
+        return
+
+    # ── Bash installer (Linux + macOS) ────────────────────────────────────
+    bash_script = f'''#!/usr/bin/env bash
+# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge home installer (auto-generated — do not commit)
+#
+#  Run on your home machine:
+#    chmod +x home_install.sh && sudo ./home_install.sh
+#
+#  What this does:
+#    1. Downloads + installs cloudflared
+#    2. Registers cloudflared as a system service (systemd / launchd)
+#    3. Configures sshd to trust CF short-lived SSH certificates
+#    4. Restarts sshd
+# ═══════════════════════════════════════════════════════════════════
+set -euo pipefail
+
+TOKEN="{tunnel_tok}"
+SSH_CA_KEY="{ssh_ca_key}"
+SSH_HOST="{ssh_host}"
+
+G='\\033[0;32m'; Y='\\033[1;33m'; R='\\033[0;31m'; X='\\033[0m'
+ok()   {{ echo -e "${{G}}[OK]${{X}}   $*"; }}
+info() {{ echo -e "${{Y}}[..]${{X}}   $*"; }}
+err()  {{ echo -e "${{R}}[!!]${{X}}   $*" >&2; }}
+
+echo ""
+echo "  ================================================"
+echo "    erebus-edge -- Home Machine Installer"
+echo "  ================================================"
+echo ""
+
+# ── 1. Install cloudflared ────────────────────────────────────────────
+if command -v cloudflared &>/dev/null; then
+    ok "cloudflared already installed"
+else
+    info "Installing cloudflared..."
+    OS=$(uname -s | tr A-Z a-z)
+    ARCH=$(uname -m)
+    case "$ARCH" in
+        x86_64)  CF_ARCH="amd64" ;;
+        aarch64|arm64) CF_ARCH="arm64" ;;
+        armv7*)  CF_ARCH="arm" ;;
+        *)       err "Unknown arch: $ARCH"; exit 1 ;;
+    esac
+
+    if [[ "$OS" == "darwin" ]]; then
+        # macOS: try brew first, fallback to binary
+        if command -v brew &>/dev/null; then
+            brew install cloudflare/cloudflare/cloudflared && ok "Installed via brew" || true
+        fi
+        if ! command -v cloudflared &>/dev/null; then
+            curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${{CF_ARCH}}.tgz" -o /tmp/cf.tgz
+            tar xzf /tmp/cf.tgz -C /usr/local/bin/ cloudflared
+            chmod +x /usr/local/bin/cloudflared
+            rm -f /tmp/cf.tgz
+            ok "cloudflared binary installed"
+        fi
+    else
+        # Linux: try package manager, fallback to binary
+        if command -v apt-get &>/dev/null; then
+            curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+            echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \\
+                | sudo tee /etc/apt/sources.list.d/cloudflared.list
+            sudo apt-get update -qq && sudo apt-get install -y cloudflared && ok "Installed via apt"
+        elif command -v dnf &>/dev/null; then
+            sudo dnf install -y cloudflared 2>/dev/null && ok "Installed via dnf"
+        fi
+        if ! command -v cloudflared &>/dev/null; then
+            curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${{CF_ARCH}}" \\
+                -o /usr/local/bin/cloudflared
+            chmod +x /usr/local/bin/cloudflared
+            ok "cloudflared binary installed"
+        fi
+    fi
+fi
+
+# ── 2. Register service ───────────────────────────────────────────────
+info "Installing cloudflared service..."
+if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
+    ok "Service installed"
+else
+    if pgrep -x cloudflared &>/dev/null || systemctl is-active --quiet cloudflared 2>/dev/null; then
+        ok "Service already running"
+        info "Reinstalling with current token..."
+        sudo cloudflared service uninstall 2>/dev/null || true
+        sudo cloudflared service install "$TOKEN"
+        ok "Service reinstalled"
+    else
+        err "Service install failed -- check cloudflared logs"
+    fi
+fi
+
+# ── 3. SSH CA trust ───────────────────────────────────────────────────
+if [[ -n "$SSH_CA_KEY" ]]; then
+    info "Configuring sshd to trust CF SSH CA..."
+    echo "$SSH_CA_KEY" | sudo tee /etc/ssh/ca.pub >/dev/null
+    sudo chmod 600 /etc/ssh/ca.pub
+    ok "CA key written to /etc/ssh/ca.pub"
+
+    if grep -q "TrustedUserCAKeys" /etc/ssh/sshd_config 2>/dev/null; then
+        ok "sshd_config already has TrustedUserCAKeys"
+    else
+        printf '\\n# Cloudflare Access short-lived SSH certificates\\nTrustedUserCAKeys /etc/ssh/ca.pub\\n' \\
+            | sudo tee -a /etc/ssh/sshd_config >/dev/null
+        ok "TrustedUserCAKeys added to sshd_config"
+    fi
+
+    if sudo systemctl restart ssh 2>/dev/null || sudo systemctl restart sshd 2>/dev/null; then
+        ok "sshd restarted"
+    elif [[ "$(uname -s)" == "Darwin" ]]; then
+        sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        sudo launchctl load /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
+        ok "sshd restarted (launchd)"
+    fi
+else
+    info "No SSH CA key -- short-lived certs not configured"
+fi
+
+# ── 4. Verify ─────────────────────────────────────────────────────────
+info "Waiting for tunnel..."
+sleep 5
+if pgrep -x cloudflared &>/dev/null || systemctl is-active --quiet cloudflared 2>/dev/null; then
+    ok "cloudflared is running"
+else
+    err "cloudflared does not appear to be running"
+fi
+
+echo ""
+echo "  ================================================"
+echo "    Done!  Home machine is ready."
+echo "  ================================================"
+echo ""
+echo "  Browser SSH : https://$SSH_HOST"
+echo "  CLI SSH     : connect.bat / ./connect.sh"
+echo "  Connects to : $(whoami)@$(hostname)"
+echo ""
+'''
+
+    # ── PowerShell installer (Windows) ────────────────────────────────────
+    ps_script = f'''# ═══════════════════════════════════════════════════════════════════
+#  erebus-edge home installer for Windows (auto-generated)
+#
+#  Run in PowerShell (as Administrator for service install):
+#    .\\home_install.ps1
+# ═══════════════════════════════════════════════════════════════════
+$ErrorActionPreference = "Stop"
+
+$TOKEN    = "{tunnel_tok}"
+$SSH_HOST = "{ssh_host}"
+
+Write-Host ""
+Write-Host "  ================================================"
+Write-Host "    erebus-edge -- Home Machine Installer"
+Write-Host "  ================================================"
+Write-Host ""
+
+# ── 1. Download cloudflared ───────────────────────────────────────
+$cfPath = "$env:LOCALAPPDATA\\cloudflared\\cloudflared.exe"
+if (Get-Command cloudflared -ErrorAction SilentlyContinue) {{
+    Write-Host "  [OK]  cloudflared already installed"
+    $cfPath = (Get-Command cloudflared).Source
+}} elseif (Test-Path $cfPath) {{
+    Write-Host "  [OK]  cloudflared found at $cfPath"
+}} else {{
+    Write-Host "  [..]  Downloading cloudflared..."
+    New-Item -ItemType Directory -Force -Path (Split-Path $cfPath) | Out-Null
+    $url = "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe"
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Invoke-WebRequest -Uri $url -OutFile $cfPath -UseBasicParsing
+    Write-Host "  [OK]  cloudflared downloaded to $cfPath"
+}}
+
+# ── 2. Install service ───────────────────────────────────────────
+Write-Host "  [..]  Installing cloudflared service..."
+$r = Start-Process -FilePath $cfPath -ArgumentList "service","install",$TOKEN `
+     -Wait -PassThru -NoNewWindow 2>$null
+if ($r.ExitCode -eq 0) {{
+    Write-Host "  [OK]  cloudflared service installed"
+}} else {{
+    Write-Host "  [!!]  Service install may need admin. Starting in background..."
+    Start-Process -FilePath $cfPath `
+        -ArgumentList "tunnel","--no-autoupdate","run","--token",$TOKEN `
+        -WindowStyle Hidden
+    Write-Host "  [OK]  cloudflared started (run as admin for persistent service)"
+}}
+
+# ── 3. Done ───────────────────────────────────────────────────────
+Start-Sleep -Seconds 5
+Write-Host ""
+Write-Host "  ================================================"
+Write-Host "    Done!  Home machine is ready."
+Write-Host "  ================================================"
+Write-Host ""
+Write-Host "  Browser SSH : https://$SSH_HOST"
+Write-Host "  CLI SSH     : connect.bat / ./connect.sh"
+Write-Host ""
+'''
+
+    keys_dir = SCRIPT_DIR / "keys"
+    keys_dir.mkdir(exist_ok=True)
+
+    sh_path = keys_dir / "home_install.sh"
+    sh_path.write_text(bash_script)
+    ok(f"Generated: {sh_path}")
+
+    ps_path = keys_dir / "home_install.ps1"
+    ps_path.write_text(ps_script)
+    ok(f"Generated: {ps_path}")
+
+    return sh_path, ps_path
+
+
+# ═════════════════════════════════════════════════════════════════════════════
 #  Summary
 # ═════════════════════════════════════════════════════════════════════════════
 def print_summary(subdomain, emails, tsnet_ok=False):
@@ -845,6 +1076,11 @@ def print_summary(subdomain, emails, tsnet_ok=False):
     cfg = get_config()
     tunnel_tok  = cfg.get("tunnel_token", "")
     ssh_ca_key  = cfg.get("ssh_ca_public_key", "")
+
+    # Generate standalone installers
+    installers = None
+    if tunnel_tok:
+        installers = generate_home_installers(subdomain)
 
     print(f"\n{'═'*58}")
     print(f"  {G}{B}Bootstrap complete!{X}")
@@ -865,36 +1101,32 @@ def print_summary(subdomain, emails, tsnet_ok=False):
                   if tsnet_ok else
                   f"  {Y}[!!]{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
 
-    # Build home setup command
-    if tunnel_tok:
-        home_args = ["python3 home_setup.py"]
-        home_args.append(f"    --token {tunnel_tok}")
-        home_args.append(f"    --ssh-host ssh.{subdomain}.workers.dev")
-        if ssh_ca_key:
-            home_args.append(f"    --ssh-ca-key '{ssh_ca_key}'")
-        home_py_cmd = " \\\n".join(home_args)
-    else:
-        home_py_cmd = "python3 home_setup.py --token <TOKEN>  # token in keys/portal_config.json"
+    if installers:
+        sh_path, ps_path = installers
+        print(f"""  {G}{B}Home machine installers generated:{X}
 
-    print(f"""  Next steps:
+    {C}Mac / Linux:{X}
+      Copy {sh_path} to your home machine, then:
+        chmod +x home_install.sh && sudo ./home_install.sh
 
-  1. On your HOME machine (Mac / Linux / Windows):
+    {C}Windows:{X}
+      Copy {ps_path} to your home machine, then:
+        powershell -ExecutionPolicy Bypass -File home_install.ps1
 
-       {home_py_cmd}
+    These are standalone -- no Python, no repo clone, no arguments needed.
+    Token + SSH CA key are embedded. Files are in keys/ (gitignored).
+""")
+    print(f"""  After running the installer:
 
-     This installs cloudflared as a system service and (if --ssh-ca-key
-     is provided) configures sshd to trust CF's short-lived certificates.
-
-  2. Browser SSH terminal:
+  1. Browser SSH terminal:
        https://ssh.{subdomain}.workers.dev
      Authenticate via email OTP -> browser SSH session opens.
-     No SSH keys, no ttyd, no extra software on the home machine.
 
-  3. CLI SSH (cloudflared ProxyCommand):
+  2. CLI SSH (cloudflared ProxyCommand):
        connect.bat   (cmd)
        ./connect.sh  (Git Bash)
 
-  4. Tailscale (works even without home-ssh):
+  3. Tailscale (works even without home-ssh):
 {tsnet_note}
      Peers:  bin\\tsnet.exe status
      SSH:    ssh -o "ProxyCommand=bin\\tsnet.exe proxy %h %p" user@peer
