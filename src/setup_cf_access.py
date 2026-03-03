@@ -13,12 +13,10 @@ What this does:
 Run:  python setup_cf_access.py [--email you@example.com]
 """
 
-import json, os, ssl, sys, urllib.request, urllib.error, argparse
+import json, ssl, sys, urllib.request, urllib.error, argparse
 
-# Allow running standalone: python lib/setup_cf_access.py
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from lib.cf_creds import get_token
-from lib.config import get_config, save_config, require
+from cf_creds import get_token
+from config import get_config, save_config, require
 
 CF_TOKEN   = get_token()
 ACCT       = require("account_id")
