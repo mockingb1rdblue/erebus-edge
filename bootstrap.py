@@ -498,28 +498,48 @@ def step_workers(acct_id, subdomain, tunnel_id):
 def step_ingress(acct_id, tunnel_id, subdomain):
     hdr("Step 6: Tunnel ingress rules")
     ssh_host  = f"ssh.{subdomain}.workers.dev"
-    term_host = f"term.{subdomain}.workers.dev"
 
     url = f"/accounts/{acct_id}/cfd_tunnel/{tunnel_id}/configurations"
     r   = api("GET", url)
     existing = r.get("result", {}).get("config", {}).get("ingress", [])
 
-    # Build desired ingress
+    # Load Access aud tag + team name for origin-side JWT validation
+    cfg = get_config()
+    ssh_aud   = cfg.get("ssh_app_aud", "")
+    team_name = cfg.get("team_name", "")
+
+    # Build SSH ingress rule with Access validation
+    ssh_rule = {"hostname": ssh_host, "service": "ssh://localhost:22"}
+    if ssh_aud and team_name:
+        ssh_rule["originRequest"] = {
+            "access": {
+                "required": True,
+                "teamName": team_name,
+                "audTag":   [ssh_aud],
+            }
+        }
+
     rules = [
-        {"hostname": ssh_host,  "service": "ssh://localhost:22"},
-        {"hostname": term_host, "service": "http://localhost:7681"},
+        ssh_rule,
         {"service": "http_status:404"},
     ]
 
-    has_ssh  = any(isinstance(x, dict) and x.get("hostname") == ssh_host  for x in existing)
-    has_term = any(isinstance(x, dict) and x.get("hostname") == term_host for x in existing)
-    if has_ssh and has_term:
-        ok("Tunnel ingress already configured.")
-        return
+    has_ssh = any(isinstance(x, dict) and x.get("hostname") == ssh_host for x in existing)
+    if has_ssh:
+        # Check if existing rule already has Access validation
+        ssh_existing = next(x for x in existing if isinstance(x, dict) and x.get("hostname") == ssh_host)
+        has_access = bool(ssh_existing.get("originRequest", {}).get("access"))
+        if has_access or not ssh_aud:
+            ok("Tunnel ingress already configured.")
+            return
+        # Upgrade: add Access validation to existing ingress
+        print(f"  Upgrading ingress with Access JWT validation...")
 
     r2 = api("PUT", url, {"config": {"ingress": rules}})
     if r2.get("success"):
-        ok(f"Ingress set: {ssh_host} → :22, {term_host} → :7681")
+        ok(f"Ingress set: {ssh_host} -> ssh://localhost:22")
+        if ssh_aud:
+            ok(f"Access JWT validation enabled (team: {team_name})")
         ok("cloudflared on the home machine will pick this up automatically.")
     else:
         warn(f"Ingress update failed: {r2.get('errors')}")
@@ -529,7 +549,7 @@ def step_ingress(acct_id, tunnel_id, subdomain):
 #  Step 7 – CF Access (optional)
 # ═════════════════════════════════════════════════════════════════════════════
 def step_access(acct_id, subdomain, emails):
-    hdr("Step 7: CF Zero Trust Access (OTP email auth)")
+    hdr("Step 7: CF Zero Trust Access (OTP email + browser SSH + short-lived certs)")
     if not emails:
         print(f"  {D}Skipped (no emails provided).{X}")
         return
@@ -539,7 +559,7 @@ def step_access(acct_id, subdomain, emails):
     mod  = importlib.util.module_from_spec(spec)
     mod.ACCT       = acct_id
     mod.PORTAL_URL = f"portal.{subdomain}.workers.dev"
-    mod.TERM_URL   = f"term.{subdomain}.workers.dev"
+    mod.SSH_HOST   = f"ssh.{subdomain}.workers.dev"
     mod.CF_TOKEN   = _TOKEN
     spec.loader.exec_module(mod)
 
@@ -548,11 +568,29 @@ def step_access(acct_id, subdomain, emails):
         warn("Zero Trust org setup failed. Skipping Access policies.")
         warn("Make sure token has 'Zero Trust Edit' permission.")
         return
+
+    team_name = org.get("auth_domain", "").replace(".cloudflareaccess.com", "")
     mod.ensure_otp_idp()
-    for host, name in [(mod.PORTAL_URL, "SSH Portal"), (mod.TERM_URL, "SSH Terminal")]:
-        app_id = mod.ensure_app(host, name)
-        if app_id:
-            mod.ensure_policy(app_id, emails)
+
+    # SSH app (type "ssh" — browser-rendered terminal + short-lived certs)
+    ssh_app_id, ssh_aud = mod.ensure_app(
+        mod.SSH_HOST, "SSH Browser Terminal", app_type="ssh", session_duration="24h")
+    if ssh_app_id:
+        mod.ensure_policy(ssh_app_id, emails)
+        ssh_ca = mod.ensure_ssh_ca(ssh_app_id)
+        if ssh_ca:
+            save_config({
+                "ssh_ca_public_key": ssh_ca,
+                "ssh_app_aud":       ssh_aud,
+                "team_name":         team_name,
+            })
+            ok("SSH short-lived certificate CA generated and saved")
+
+    # Portal app (self-hosted)
+    portal_app_id, _ = mod.ensure_app(mod.PORTAL_URL, "SSH Portal")
+    if portal_app_id:
+        mod.ensure_policy(portal_app_id, emails)
+
     ok("CF Access configured.")
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -805,49 +843,54 @@ def step_save(acct_id, subdomain, tunnel_id, tunnel_tok, kv_ns_id):
 def print_summary(subdomain, emails, tsnet_ok=False):
     from config import get_config
     cfg = get_config()
-    tunnel_tok = cfg.get("tunnel_token", "")
+    tunnel_tok  = cfg.get("tunnel_token", "")
+    ssh_ca_key  = cfg.get("ssh_ca_public_key", "")
 
     print(f"\n{'═'*58}")
     print(f"  {G}{B}Bootstrap complete!{X}")
     print(f"{'═'*58}")
     print(f"""
   Your SSH Portal:
-    Portal    : {C}https://portal.{subdomain}.workers.dev{X}
-    Terminal  : {C}https://term.{subdomain}.workers.dev{X}
-    SSH host  : {C}ssh.{subdomain}.workers.dev{X}
-    TS relay  : {C}https://ts-relay.{subdomain}.workers.dev{X}
+    Browser SSH : {C}https://ssh.{subdomain}.workers.dev{X}  (CF Access login)
+    Portal      : {C}https://portal.{subdomain}.workers.dev{X}
+    TS relay    : {C}https://ts-relay.{subdomain}.workers.dev{X}
 """)
     if emails:
-        print(f"  CF Access (OTP email): {', '.join(emails)}\n")
+        print(f"  CF Access (OTP email): {', '.join(emails)}")
+    if ssh_ca_key:
+        print(f"  Short-lived SSH certs: {G}ENABLED{X}")
+    print()
 
-    tsnet_note = (f"  {G}✓{X} tsnet.exe built — run:  bin\\tsnet.exe up"
+    tsnet_note = (f"  {G}[ok]{X} tsnet.exe built -- run:  bin\\tsnet.exe up"
                   if tsnet_ok else
-                  f"  {Y}!{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
+                  f"  {Y}[!!]{X} tsnet.exe not built. Run later:  python bootstrap.py --build-tsnet")
 
+    # Build home setup command
     if tunnel_tok:
-        home_sh_cmd  = f"bash home_setup.sh {tunnel_tok}"
-        home_py_cmd  = (f"python3 home_setup.py \\\n"
-                        f"    --token {tunnel_tok} \\\n"
-                        f"    --portal-url https://portal.{subdomain}.workers.dev \\\n"
-                        f"    --term-url   https://term.{subdomain}.workers.dev \\\n"
-                        f"    --ssh-host   ssh.{subdomain}.workers.dev")
+        home_args = ["python3 home_setup.py"]
+        home_args.append(f"    --token {tunnel_tok}")
+        home_args.append(f"    --ssh-host ssh.{subdomain}.workers.dev")
+        if ssh_ca_key:
+            home_args.append(f"    --ssh-ca-key '{ssh_ca_key}'")
+        home_py_cmd = " \\\n".join(home_args)
     else:
-        home_sh_cmd  = "bash home_setup.sh <TOKEN>   # token in keys/portal_config.json"
-        home_py_cmd  = "python3 home_setup.py --token <TOKEN>"
+        home_py_cmd = "python3 home_setup.py --token <TOKEN>  # token in keys/portal_config.json"
 
     print(f"""  Next steps:
 
-  1. On your HOME machine (Linux):
-       {home_sh_cmd}
+  1. On your HOME machine (Mac / Linux / Windows):
 
-     Or cross-platform (Mac / Linux / Windows):
        {home_py_cmd}
 
-  2. Browser portal:
-       https://portal.{subdomain}.workers.dev
-     Log in with your CF token → add endpoint → Connect.
+     This installs cloudflared as a system service and (if --ssh-ca-key
+     is provided) configures sshd to trust CF's short-lived certificates.
 
-  3. CLI SSH (cloudflared):
+  2. Browser SSH terminal:
+       https://ssh.{subdomain}.workers.dev
+     Authenticate via email OTP -> browser SSH session opens.
+     No SSH keys, no ttyd, no extra software on the home machine.
+
+  3. CLI SSH (cloudflared ProxyCommand):
        connect.bat   (cmd)
        ./connect.sh  (Git Bash)
 
