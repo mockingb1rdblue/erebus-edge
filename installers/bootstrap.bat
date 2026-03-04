@@ -1047,10 +1047,17 @@ echo   Copy installers\ to your home machine, then run:
 echo.
 echo     %Y%Linux / Mac:%X%
 echo       chmod +x home_linux_mac.sh
-echo       sudo ./home_linux_mac.sh !_home_args!
+echo       ./home_linux_mac.sh !_home_args!
+echo       It will ask: Quick start (no sudo) or Full system setup (sudo).
+echo       Or pass --sudo / --no-sudo to skip the prompt.
 echo.
-echo     %Y%Windows (as Administrator):%X%
-echo       home_windows.bat !_sum_tok! "!_sum_ca!" !SSH_HOST!
+echo     %Y%Windows:%X%
+set "_win_args=--token !_sum_tok!"
+if not "!_sum_ca!"=="" set "_win_args=!_win_args! --ca-key "!_sum_ca!""
+if not "!SSH_HOST!"=="" set "_win_args=!_win_args! --ssh-host !SSH_HOST!"
+echo       home_windows.bat !_win_args!
+echo       It will ask: Quick start (no admin) or Full system setup (admin).
+echo       Or pass --admin / --no-admin to skip the prompt.
 echo.
 echo   %C%STEP 2 -- Set up your WORK machine%X% (the one you connect from)
 echo   Copy installers\ to your work machine, then run:
