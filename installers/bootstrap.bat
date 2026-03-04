@@ -731,7 +731,41 @@ echo   $orgBody = @{ name=$orgName; auth_domain="$orgName.cloudflareaccess.com";
 echo   try {
 echo     $r = Invoke-RestMethod -Uri "%CF_API%/accounts/$acct/access/organizations" -Method PUT -Headers $h -Body $orgBody -ErrorAction Stop
 echo     if ($r.success^) { $org = $r.result; Write-Host "  [OK] Created Zero Trust org" }
-echo   } catch { Write-Host "  [WARN] Org setup failed"; exit 1 }
+echo   } catch {
+echo     $errMsg = "$($_.Exception.Message) $($_.ErrorDetails.Message)"
+echo     if ($errMsg -match 'not.enabled' -or $errMsg -match 'not_enabled'^) {
+echo       Write-Host ""
+echo       Write-Host "  [!] Zero Trust is not enabled on this Cloudflare account yet."
+echo       Write-Host "      You need to enroll in Zero Trust (free plan available)."
+echo       Write-Host ""
+echo       Write-Host "  How to enable Zero Trust -- step by step:"
+echo       Write-Host ""
+echo       Write-Host "  1. Go to https://one.dash.cloudflare.com"
+echo       Write-Host "     (or in the CF Dashboard sidebar, click 'Zero Trust')"
+echo       Write-Host "  2. Pick a team name (subdomain for your auth portal)"
+echo       Write-Host "     Example: erebus-edge -^> erebus-edge.cloudflareaccess.com"
+echo       Write-Host "  3. Select the Free plan (covers everything we need)"
+echo       Write-Host "  4. Add a payment method (you will NOT be charged -- dollar 0)"
+echo       Write-Host "  5. Click Purchase on the review page"
+echo       Write-Host "  6. You should see 'Successfully updated plan'"
+echo       Write-Host ""
+echo       Write-Host "  Press Enter after completing these steps (or type 'q' to skip)..."
+echo       $reply = Read-Host
+echo       if ($reply -eq 'q'^) { exit 1 }
+echo       Write-Host "  Retrying Zero Trust setup..."
+echo       try {
+echo         $r2 = Invoke-RestMethod -Uri "%CF_API%/accounts/$acct/access/organizations" -Headers $h -ErrorAction Stop
+echo         if ($r2.success -and $r2.result^) { $org = $r2.result; Write-Host "  [OK] Zero Trust org exists" }
+echo       } catch {}
+echo       if (-not $org^) {
+echo         $ob2 = @{ name=$orgName; auth_domain="$orgName.cloudflareaccess.com"; login_design=@{}; is_ui_read_only=$false } ^| ConvertTo-Json
+echo         try {
+echo           $r3 = Invoke-RestMethod -Uri "%CF_API%/accounts/$acct/access/organizations" -Method PUT -Headers $h -Body $ob2 -ErrorAction Stop
+echo           if ($r3.success^) { $org = $r3.result; Write-Host "  [OK] Created Zero Trust org" }
+echo         } catch { Write-Host "  [WARN] Still failed. Visit https://one.dash.cloudflare.com"; exit 1 }
+echo       }
+echo     } else { Write-Host "  [WARN] Org setup failed: $errMsg"; exit 1 }
+echo   }
 echo }
 echo $teamName = ($org.auth_domain -replace '\.cloudflareaccess\.com$',''^)
 echo.
