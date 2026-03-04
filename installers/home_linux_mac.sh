@@ -277,6 +277,8 @@ else
 fi
 
 # ── 4. Start tunnel ──────────────────────────────────────────────
+_CF_BIN=$(command -v cloudflared)
+
 if ! $USE_SUDO; then
     echo ""
     echo -e "  ${G}${B}Setup complete! Starting tunnel...${X}"
@@ -293,8 +295,53 @@ if ! $USE_SUDO; then
     # If we get here, cloudflared exited
     info "cloudflared tunnel stopped."
     exit 0
+fi
+
+# ── sudo mode: install as system service ──────────────────────────
+info "Installing cloudflared tunnel service..."
+
+if $IS_MAC; then
+    # macOS: `cloudflared service install` doesn't accept a token argument.
+    # Create a LaunchDaemon plist manually that runs the tunnel with the token.
+    _PLIST="/Library/LaunchDaemons/com.cloudflare.cloudflared.plist"
+    _LOG_DIR="/var/log/cloudflared"
+    sudo mkdir -p "$_LOG_DIR"
+
+    # Unload existing if present
+    sudo launchctl unload "$_PLIST" 2>/dev/null || true
+
+    sudo tee "$_PLIST" >/dev/null <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cloudflare.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${_CF_BIN}</string>
+        <string>tunnel</string>
+        <string>run</string>
+        <string>--token</string>
+        <string>${TOKEN}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>${_LOG_DIR}/cloudflared.log</string>
+    <key>StandardErrorPath</key>
+    <string>${_LOG_DIR}/cloudflared.err</string>
+</dict>
+</plist>
+PLIST
+
+    sudo launchctl load "$_PLIST"
+    ok "Tunnel service installed (LaunchDaemon)"
+    ok "Logs: $_LOG_DIR/cloudflared.log"
 else
-    info "Installing cloudflared tunnel service..."
+    # Linux: cloudflared service install accepts a token
     if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
         ok "Tunnel service installed and started"
     else
@@ -309,13 +356,18 @@ else
     fi
 fi
 
-# ── 5. Verify (sudo mode only — no-sudo exits above) ─────────────
+# ── 5. Verify ─────────────────────────────────────────────────────
 info "Waiting for tunnel..."
 sleep 5
 if pgrep -x cloudflared &>/dev/null; then
     ok "cloudflared is running"
 else
-    err "cloudflared may not be running -- check: sudo systemctl status cloudflared"
+    if $IS_MAC; then
+        err "cloudflared may not be running -- check: sudo launchctl list | grep cloudflare"
+        err "Logs: cat /var/log/cloudflared/cloudflared.err"
+    else
+        err "cloudflared may not be running -- check: sudo systemctl status cloudflared"
+    fi
 fi
 
 echo ""
