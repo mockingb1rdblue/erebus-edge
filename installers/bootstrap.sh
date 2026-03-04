@@ -623,20 +623,54 @@ _offer_save_token() {
     [ "$save_choice" != "2" ] && store_credential "$TOKEN"
 }
 
+_verify_token() {
+    # _verify_token TOKEN — prints "yes" if token has valid accounts, "no" otherwise
+    local tok="$1"
+    local verify
+    verify=$(curl -sk \
+        -H "Authorization: Bearer $tok" \
+        -H "Content-Type: application/json" \
+        "${CF_API}/accounts" 2>/dev/null)
+    echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')"
+}
+
+_do_browser_auth() {
+    # Browser OAuth flow: opens browser, creates scoped token, saves.
+    # Returns 0 on success (TOKEN is set), 1 on failure.
+    local broad
+    broad=$(browser_login)
+    if [ -z "$broad" ]; then
+        return 1
+    fi
+    # Get account so we can create scoped token
+    local accts_resp
+    accts_resp=$(curl -sk \
+        -H "Authorization: Bearer $broad" \
+        -H "Content-Type: application/json" \
+        "${CF_API}/accounts" 2>/dev/null)
+    if ! pick_account "$accts_resp"; then
+        err "No accounts found with this login."
+        return 1
+    fi
+    local scoped
+    scoped=$(create_scoped_token "$broad" "$ACCT_ID")
+    if [ -n "$scoped" ]; then
+        TOKEN="$scoped"
+    else
+        warn "Could not create scoped token. Using broad login token."
+        TOKEN="$broad"
+    fi
+    _offer_save_token
+    return 0
+}
+
 step_auth() {
     hdr "Step 1: Authenticate with Cloudflare"
 
-    # --cf-token flag: non-interactive auth
+    # --cf-token flag: direct token, skip all interactive auth
     if [ -n "$ARG_CF_TOKEN" ]; then
         TOKEN="$ARG_CF_TOKEN"
-        local verify
-        verify=$(curl -sk \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            "${CF_API}/accounts" 2>/dev/null)
-        local has_accts
-        has_accts=$(echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')")
-        if [ "$has_accts" != "yes" ]; then
+        if [ "$(_verify_token "$TOKEN")" != "yes" ]; then
             err "Provided --cf-token is invalid (no accounts found)."
             exit 1
         fi
@@ -649,14 +683,7 @@ step_auth() {
     local stored
     stored=$(load_credential)
     if [ -n "$stored" ]; then
-        local verify
-        verify=$(curl -sk \
-            -H "Authorization: Bearer $stored" \
-            -H "Content-Type: application/json" \
-            "${CF_API}/accounts" 2>/dev/null)
-        local has_accts
-        has_accts=$(echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')")
-        if [ "$has_accts" = "yes" ]; then
+        if [ "$(_verify_token "$stored")" = "yes" ]; then
             ok "Using stored Cloudflare credentials."
             TOKEN="$stored"
             return
@@ -664,41 +691,36 @@ step_auth() {
         warn "Stored token could not be verified -- re-authenticating."
     fi
 
-    printf "\n  ${B}Authentication method:${X}\n"
-    printf "  ${B}1${X}  Browser OAuth  ${D}(recommended -- opens Cloudflare in browser)${X}\n"
-    printf "  ${B}2${X}  Paste API token  ${D}(from CF Dashboard -> My Profile -> API Tokens)${X}\n"
-    printf "\n  [1/2]: "
-    read -r method
+    # Browser OAuth is the recommended and default method because:
+    #   - Creates a properly scoped token with only the 4 required permissions
+    #   - Token is tied to your CF account, not a global key
+    #   - No need to manually navigate the CF dashboard
+    #   - Token value is captured automatically (CF never re-exposes it)
+    printf "\n  ${B}Browser OAuth${X} is the recommended authentication method.\n"
+    printf "  ${D}It creates a scoped API token with only the permissions needed,${X}\n"
+    printf "  ${D}and captures the token value automatically.${X}\n\n"
+
+    # If running with flags (semi-automated), go straight to browser auth
+    local method="1"
+    if [ ${#ARG_EMAILS[@]} -eq 0 ] && [ -t 0 ]; then
+        # Interactive terminal with no pre-set flags — offer choice
+        printf "  ${B}1${X}  Browser OAuth  ${G}(recommended)${X}\n"
+        printf "  ${B}2${X}  Paste API token  ${D}(manual -- from CF Dashboard)${X}\n"
+        printf "\n  [1/2]: "
+        read -r method
+        method="${method:-1}"
+    else
+        printf "  ${G}-->  Opening browser for Cloudflare OAuth...${X}\n"
+    fi
 
     if [ "$method" != "2" ]; then
-        local broad
-        broad=$(browser_login)
-        if [ -n "$broad" ]; then
-            # Get account so we can create scoped token
-            local accts_resp
-            accts_resp=$(curl -sk \
-                -H "Authorization: Bearer $broad" \
-                -H "Content-Type: application/json" \
-                "${CF_API}/accounts" 2>/dev/null)
-            if ! pick_account "$accts_resp"; then
-                err "No accounts found with this login."
-                exit 1
-            fi
-            local scoped
-            scoped=$(create_scoped_token "$broad" "$ACCT_ID")
-            if [ -n "$scoped" ]; then
-                TOKEN="$scoped"
-            else
-                warn "Could not create scoped token. Using broad login token."
-                TOKEN="$broad"
-            fi
-            _offer_save_token
+        if _do_browser_auth; then
             return
         fi
         warn "Browser login failed. Falling back to manual token."
     fi
 
-    # Manual paste
+    # Manual paste fallback
     printf "\n  Dashboard -> My Profile -> API Tokens -> Create Token\n"
     printf "  Permissions: Cloudflare Tunnel Edit, Workers Script Edit,\n"
     printf "               Workers KV Storage Edit, Zero Trust Edit\n"
@@ -1409,15 +1431,22 @@ Usage: bootstrap.sh [OPTIONS]
 SSH Portal bootstrap wizard. Sets up CF Tunnel, Workers, Access, and
 optionally tsnet on your Cloudflare account.
 
-Authentication:
-  --cf-token TOKEN    CF API token (skips interactive auth prompt)
-                      Token needs: Cloudflare Tunnel Edit, Workers Script Edit,
-                      Workers KV Storage Edit, Zero Trust Edit
-  --save-token        Auto-save token to Keychain/file (no prompt)
+Authentication (choose one):
+  (default)           Browser OAuth — opens Cloudflare in your browser.
+                      PREFERRED because it:
+                        * Creates a scoped token with only the 4 required permissions
+                        * Captures the token value automatically (CF never re-shows it)
+                        * No manual dashboard navigation needed
+                        * Token is tied to your account, not a global API key
+  --cf-token TOKEN    Pre-made CF API token (skips browser, fully non-interactive).
+                      Token needs permissions: Cloudflare Tunnel Edit,
+                      Workers Script Edit, Workers KV Storage Edit, Zero Trust Edit
+  --save-token        Auto-save token to macOS Keychain or Linux file (no prompt)
 
 Access control:
   --email EMAIL       Email for CF Access OTP policy (repeatable)
                       If omitted and --skip-access is not set, prompts interactively
+                      (skipped automatically when using --cf-token)
 
 Modes:
   --redeploy          Re-deploy Workers using existing config (skip tunnel/KV setup)
@@ -1431,7 +1460,11 @@ Skip flags:
 Other:
   -h, --help          Show this help
 
-Non-interactive example (fully automated):
+Examples:
+  # Interactive (recommended for first run — opens browser for auth):
+  ./bootstrap.sh --email user@example.com
+
+  # Fully automated (requires pre-made token):
   ./bootstrap.sh --cf-token "YOUR_TOKEN" --save-token \
     --email user@example.com --skip-tsnet
 
