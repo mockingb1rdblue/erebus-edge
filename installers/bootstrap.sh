@@ -121,7 +121,7 @@ store_credential() {
     local tok="$1"
     if [ "$OS" = "darwin" ]; then
         security delete-generic-password -a "$USER" -s "$_KC_SERVICE" 2>/dev/null || true
-        security add-generic-password -a "$USER" -s "$_KC_SERVICE" -w "$tok"
+        security add-generic-password -a "$USER" -s "$_KC_SERVICE" -w "$tok" 2>/dev/null
         ok "Token saved to macOS Keychain."
     else
         mkdir -p "$KEYS_DIR"
@@ -1152,12 +1152,12 @@ else: print('')")
     if [ -n "$existing" ]; then
         local app_id="${existing%%|*}"
         SSH_APP_AUD="${existing##*|}"
-        ok "Access app '$name' already exists: $app_id"
+        ok "Access app '$name' already exists: $app_id" >&2
         echo "$app_id"
         return 0
     fi
 
-    printf "  Creating Access app for $hostname (type: $app_type) ...\n"
+    printf "  Creating Access app for $hostname (type: $app_type) ...\n" >&2
     local payload
     payload=$(python3 -c "
 import json; d = {
@@ -1180,11 +1180,11 @@ print(json.dumps(d))")
         local app_id
         app_id=$(echo "$r" | json_get "result.id")
         SSH_APP_AUD=$(echo "$r" | json_get "result.aud")
-        ok "Created Access app: $app_id"
+        ok "Created Access app: $app_id" >&2
         echo "$app_id"
         return 0
     fi
-    warn "Could not create Access app: $(echo "$r" | json_get 'errors')"
+    warn "Could not create Access app: $(echo "$r" | json_get 'errors')" >&2
     return 1
 }
 
