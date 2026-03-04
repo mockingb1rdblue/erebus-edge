@@ -1037,7 +1037,84 @@ import json; print(json.dumps({
         ok "Created Zero Trust org: $org_name"
         return 0
     fi
+    # Check if Access is not enabled yet
+    local err_str
+    err_str=$(echo "$r" | json_py "
+errs = d.get('errors', [])
+print(' '.join(str(e.get('message','')) if isinstance(e,dict) else str(e) for e in errs))")
+    if echo "$err_str" | grep -qi "not.enabled\|not_enabled"; then
+        _zt_enrollment_guide
+        return $?
+    fi
+
     warn "Zero Trust org setup failed: $(echo "$r" | json_get 'errors')"
+    return 1
+}
+
+# ── Zero Trust enrollment walkthrough ─────────────────────────────────────────
+_zt_enrollment_guide() {
+    printf "\n"
+    warn "Zero Trust is not enabled on this Cloudflare account yet."
+    printf "  You need to enroll in Zero Trust (free plan available).\n\n"
+    printf "  ${B}How to enable Zero Trust — step by step:${X}\n\n"
+    printf "  ${C}1.${X} Go to ${B}https://one.dash.cloudflare.com${X}\n"
+    printf "     (or in the CF Dashboard sidebar, click ${B}Zero Trust${X})\n"
+    printf "  ${C}2.${X} Pick a ${B}team name${X} (subdomain for your auth portal)\n"
+    printf "     Example: ${C}erebus-edge${X} -> erebus-edge.cloudflareaccess.com\n"
+    printf "  ${C}3.${X} Select the ${B}Free${X} plan (covers everything we need)\n"
+    printf "  ${C}4.${X} Add a payment method (you will ${B}not be charged${X} — \$0)\n"
+    printf "  ${C}5.${X} Click ${B}Purchase${X} on the review page\n"
+    printf "  ${C}6.${X} You should see ${B}\"Successfully updated plan\"${X}\n\n"
+
+    # If running non-interactively, just fail with instructions
+    if [ ! -t 0 ]; then
+        printf "  Re-run this script after completing the steps above.\n"
+        return 1
+    fi
+
+    printf "  ${Y}Press Enter after you've completed these steps (or 'q' to skip)...${X} "
+    local reply
+    read -r reply
+    if [ "$reply" = "q" ] || [ "$reply" = "Q" ]; then
+        return 1
+    fi
+
+    # Retry org creation
+    printf "  Retrying Zero Trust setup...\n"
+    local r
+    r=$(cf_api GET "/accounts/${ACCT_ID}/access/organizations")
+    local has_org
+    has_org=$(echo "$r" | json_py "print('yes' if d.get('success') and d.get('result') else 'no')")
+    if [ "$has_org" = "yes" ]; then
+        TEAM_NAME=$(echo "$r" | json_py "
+ad = d.get('result',{}).get('auth_domain','')
+print(ad.replace('.cloudflareaccess.com',''))")
+        ok "Zero Trust org exists (team: $TEAM_NAME)"
+        return 0
+    fi
+
+    # Try creating
+    local org_name="${ACCT_NAME:-erebus}"
+    org_name=$(echo "$org_name" | tr '[:upper:]' '[:lower:]' | tr -d ' ')
+    local payload
+    payload=$(python3 -c "
+import json; print(json.dumps({
+    'name': '$org_name',
+    'auth_domain': '${org_name}.cloudflareaccess.com',
+    'login_design': {},
+    'is_ui_read_only': False
+}))")
+    r=$(cf_api PUT "/accounts/${ACCT_ID}/access/organizations" "$payload")
+    local success
+    success=$(echo "$r" | json_get "success")
+    if [ "$success" = "true" ]; then
+        TEAM_NAME="$org_name"
+        ok "Created Zero Trust org: $org_name"
+        return 0
+    fi
+
+    warn "Zero Trust org setup still failed: $(echo "$r" | json_get 'errors')"
+    printf "  Try visiting https://one.dash.cloudflare.com and ensure enrollment completed.\n"
     return 1
 }
 
