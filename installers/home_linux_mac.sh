@@ -144,14 +144,15 @@ if ! $USE_SUDO; then
         info "Make sure sshd is running: sudo systemctl enable --now ssh"
     fi
 elif $IS_MAC; then
-    if systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
-        ok "Remote Login (SSH) is enabled"
+    if sudo systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
+        ok "Remote Login (SSH) is already enabled"
     else
         info "Enabling Remote Login (SSH)..."
         sudo systemsetup -setremotelogin on 2>/dev/null || {
             err "Could not enable Remote Login automatically"
             err "Enable manually: System Settings -> General -> Sharing -> Remote Login"
         }
+        ok "Remote Login (SSH) enabled"
     fi
 else
     if systemctl is-active --quiet ssh 2>/dev/null || systemctl is-active --quiet sshd 2>/dev/null; then
@@ -197,7 +198,10 @@ else
     else
         if $IS_MAC; then
             if command -v brew &>/dev/null; then
-                brew install cloudflare/cloudflare/cloudflared 2>/dev/null && ok "Installed via brew" || true
+                info "Installing cloudflared via brew (this may take a moment)..."
+                HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+                    brew install cloudflare/cloudflare/cloudflared >/dev/null 2>&1 \
+                    && ok "Installed via brew" || true
             fi
             if ! command -v cloudflared &>/dev/null; then
                 curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${CF_ARCH}.tgz" -o /tmp/cf.tgz
