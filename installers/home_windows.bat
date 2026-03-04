@@ -69,12 +69,37 @@ exit /b 0
 
 :args_done
 
+REM ── Auto-read config from bootstrap output if flags not provided ──
+set "_CFG_FILE="
+if exist "%~dp0..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\erebus-temp\keys\portal_config.json"
+if "%_CFG_FILE%"=="" if exist "%~dp0..\..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\erebus-temp\keys\portal_config.json"
+
+if not "%_CFG_FILE%"=="" (
+    REM Use PowerShell to read JSON values (only if PowerShell available)
+    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).tunnel_token" 2^>nul`) do (
+        if "%TOKEN%"=="" set "TOKEN=%%v"
+    )
+    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_ca_public_key" 2^>nul`) do (
+        if "%SSH_CA_KEY%"=="" set "SSH_CA_KEY=%%v"
+    )
+    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_host" 2^>nul`) do (
+        if "%SSH_HOST%"=="" set "SSH_HOST=%%v"
+    )
+    if not "%TOKEN%"=="" (
+        echo.
+        echo   Auto-loaded config from: %_CFG_FILE%
+    )
+)
+
 if "%TOKEN%"=="" (
     echo.
-    echo   Usage: home_windows.bat --token ^<TOKEN^> [--ca-key ^<KEY^>] [--ssh-host ^<HOST^>]
+    echo   Usage: home_windows.bat [--admin] [--token ^<TOKEN^>] [--ca-key ^<KEY^>] [--ssh-host ^<HOST^>]
     echo.
-    echo   Run "installers\bootstrap.bat" first -- it prints the exact command.
-    echo   Use --help for details on admin vs no-admin modes.
+    echo   If you ran bootstrap.bat from this repo, just run:
+    echo     installers\home_windows.bat
+    echo.
+    echo   It auto-reads the token, SSH CA key, and host from ..\erebus-temp\.
+    echo   Use --help for all options.
     echo.
     pause
     exit /b 1

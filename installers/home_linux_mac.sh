@@ -32,9 +32,10 @@ FORCE_NO_SUDO=false
 show_help() {
     cat <<'HELP'
 Usage:
+  ./home_linux_mac.sh                           (auto-reads from ../erebus-temp/)
   ./home_linux_mac.sh --token <TUNNEL_TOKEN> [OPTIONS]
 
-Required:
+Required (unless auto-read from bootstrap config):
   --token <TOKEN>       Cloudflare Tunnel token (from bootstrap.sh output)
 
 Options:
@@ -73,11 +74,36 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# ── Auto-read config from bootstrap output if flags not provided ──
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CFG_FILE=""
+# Check relative to installers/ dir (running from repo)
+[[ -f "$_SCRIPT_DIR/../erebus-temp/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/erebus-temp/keys/portal_config.json"
+# Check relative to repo root (running from repo root)
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../erebus-temp/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/erebus-temp/keys/portal_config.json"
+
+if [[ -n "$_CFG_FILE" ]]; then
+    _json_val() { python3 -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$1',''); print(v if v else '')" 2>/dev/null; }
+    [[ -z "$TOKEN" ]]    && TOKEN=$(_json_val tunnel_token)
+    [[ -z "$SSH_CA_KEY" ]] && SSH_CA_KEY=$(_json_val ssh_ca_public_key)
+    [[ -z "$SSH_HOST" ]]  && SSH_HOST=$(_json_val ssh_host)
+    if [[ -n "$TOKEN" ]]; then
+        echo ""
+        echo "  Auto-loaded config from: $_CFG_FILE"
+    fi
+fi
+
 if [[ -z "$TOKEN" ]]; then
-    echo "Usage: ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]"
     echo ""
-    echo "Run './installers/bootstrap.sh' first -- it prints the exact command."
-    echo "Use --help for details on sudo vs no-sudo modes."
+    echo "Usage: ./home_linux_mac.sh [--sudo] [--token <TOKEN>] [--ca-key <KEY>] [--ssh-host <HOST>]"
+    echo ""
+    echo "If you ran bootstrap.sh from this repo, just run:"
+    echo "  ./installers/home_linux_mac.sh"
+    echo ""
+    echo "It auto-reads the token, SSH CA key, and host from ../erebus-temp/."
+    echo "Use --help for all options."
     exit 1
 fi
 
