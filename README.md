@@ -25,17 +25,40 @@ Share the repo/zip -- not the URL.
 
 ---
 
-## Quick start
+## Prerequisites
 
-### 1. Run bootstrap (any machine, no Python needed)
+You need a **free** [Cloudflare account](https://dash.cloudflare.com/sign-up).
+That's it. No paid plan, no domain name, no credit card required for basic setup.
+
+The bootstrap wizard walks you through everything, including:
+- Creating a CF API token (opens the dashboard with step-by-step instructions)
+- Enabling Zero Trust (free plan, $0 charge)
+
+**Optional:** A [Tailscale account](https://login.tailscale.com/start) if you
+want peer-to-peer connectivity (Option C below). Not needed for SSH.
+
+---
+
+## Quick start (from scratch)
+
+### 1. Clone and run bootstrap
 
 ```bash
+git clone https://github.com/YOUR_USER/erebus-edge.git
+cd erebus-edge
+
 # macOS / Linux
 ./installers/bootstrap.sh --email you@example.com
 
 # Windows (cmd or PowerShell)
 installers\bootstrap.bat --email you@example.com
 ```
+
+The wizard will:
+1. Open your browser to the CF Dashboard to create an API token
+2. Print step-by-step instructions (which buttons to click, which permissions)
+3. If Zero Trust isn't enabled, walk you through the free enrollment
+4. Create everything automatically once you paste the token
 
 Opens your browser to create a Cloudflare API token, then automatically:
 
@@ -65,19 +88,22 @@ All artifacts go to `../erebus-temp/` -- the repo stays clean.
 
 ### 2. Set up your home machine
 
-Bootstrap prints the exact command with your token. Copy-paste it.
+If you ran bootstrap on the same machine, just run:
 
 ```bash
-# Default: interactive mode picker (no sudo needed)
-./installers/home_linux_mac.sh --token <TOKEN> --ca-key "<KEY>" --ssh-host <HOST>
+# macOS / Linux — auto-reads token from ../erebus-temp/
+./installers/home_linux_mac.sh
 
-# Windows (as Administrator)
-installers\home_windows.bat <TOKEN> "<CA_KEY>" <HOST>
+# Windows — auto-reads token from ..\erebus-temp\
+installers\home_windows.bat
 ```
 
+If your home machine is a **different box**, copy the repo there (or just
+`installers/` + `../erebus-temp/`) and run the same command.
+
 The script asks whether you want **Quick start** (no sudo, foreground tunnel)
-or **Full system setup** (sudo, auto-starts on boot). Pass `--sudo` or
-`--no-sudo` to skip the prompt.
+or **Full system setup** (sudo/admin, auto-starts on boot). Pass `--sudo` /
+`--no-sudo` (or `--admin` / `--no-admin` on Windows) to skip the prompt.
 
 ### 3. Set up your work machine
 

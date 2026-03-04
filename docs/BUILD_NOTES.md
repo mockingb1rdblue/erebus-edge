@@ -319,18 +319,89 @@ if echo "$error" | grep -qi "not.enabled"; then
 fi
 ```
 
-### Bootstrap output as copy-paste commands
+### Never make users paste long tokens on the command line
 
-The bootstrap wizard's final output should print the exact commands for
-the next steps, with all tokens/keys/hosts filled in. Users should be
-able to copy-paste directly without editing. Include both the default
-and alternative invocations:
+Tunnel tokens (~200 chars) + SSH CA keys (~200 chars) = commands too
+long for reliable terminal paste. Terminals wrap long lines and the
+paste splits at the wrap point, truncating arguments. This is silent
+and devastating -- the script runs with a bad token, "installs" the
+service, reports success, but the service immediately crash-loops.
 
+**Solution:** Write all config to a JSON file during bootstrap, and
+have downstream scripts auto-read it:
+
+```bash
+# bootstrap writes to ../erebus-temp/keys/portal_config.json
+# home installer auto-reads it -- no arguments needed:
+./installers/home_linux_mac.sh
 ```
-  Linux / Mac:
-    ./home_linux_mac.sh --token eyJh... --ca-key "ecdsa-..." --ssh-host ssh.you.workers.dev
-    It will ask: Quick start (no sudo) or Full system setup (sudo).
-    Or pass --sudo / --no-sudo to skip the prompt.
+
+CLI flags still work and take precedence, but the zero-argument path
+should be the default for same-machine setups.
+
+### Verify services actually work, not just that they installed
+
+`launchctl load` and `systemctl enable` succeed even if the service
+immediately crashes. Always verify the process is actually healthy
+after a delay:
+
+```bash
+sleep 5
+if pgrep -x cloudflared &>/dev/null; then
+    # Check logs for errors even though process is alive
+    # (KeepAlive restarts it, so it may be crash-looping)
+    if tail -3 /var/log/cloudflared/cloudflared.err | grep -qi "not valid"; then
+        err "Service is crash-looping with bad token"
+    else
+        ok "Service is healthy"
+    fi
+fi
+```
+
+### macOS cloudflared service install doesn't accept tokens
+
+The Homebrew version of `cloudflared service install` on macOS only
+creates a user LaunchAgent for named tunnels with config files. It
+does NOT accept a tunnel token argument (unlike the Linux version).
+
+For remotely-managed tunnels with tokens, create a LaunchDaemon plist
+manually:
+
+```xml
+<!-- /Library/LaunchDaemons/com.cloudflare.cloudflared.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.cloudflare.cloudflared</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/cloudflared</string>
+        <string>tunnel</string>
+        <string>run</string>
+        <string>--token</string>
+        <string>YOUR_TOKEN_HERE</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+</dict>
+</plist>
+```
+
+### macOS systemsetup needs sudo for reading too
+
+`systemsetup -getremotelogin` requires root on modern macOS. Without
+sudo, the command silently fails (exit 0, empty output), causing the
+script to think SSH is disabled and try to enable it.
+
+### Suppress brew auto-update in scripts
+
+`brew install` triggers a full auto-update by default, producing 30+
+lines of noise (new formulae, outdated formulae, download progress,
+caveats). Suppress with:
+
+```bash
+HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+    brew install cloudflare/cloudflare/cloudflared >/dev/null 2>&1
 ```
 
 ### Every flag in --help

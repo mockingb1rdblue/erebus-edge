@@ -383,28 +383,64 @@ else
 fi
 
 # ── 5. Verify ─────────────────────────────────────────────────────
-info "Waiting for tunnel..."
+info "Waiting for tunnel to connect..."
 sleep 5
+
+# Check if the process is running AND actually connected (not crash-looping)
+_tunnel_ok=false
 if pgrep -x cloudflared &>/dev/null; then
-    ok "cloudflared is running"
+    # Process is alive — check if it's actually working, not just restarting
+    if $IS_MAC && [[ -f "/var/log/cloudflared/cloudflared.err" ]]; then
+        _last_err=$(tail -3 /var/log/cloudflared/cloudflared.err 2>/dev/null)
+        if echo "$_last_err" | grep -qi "not valid\|error\|failed"; then
+            err "cloudflared is running but has errors:"
+            echo "$_last_err" | sed 's/^/    /'
+            echo ""
+            err "This usually means the tunnel token is invalid or truncated."
+            err "Re-run: ./installers/home_linux_mac.sh --sudo"
+        else
+            _tunnel_ok=true
+        fi
+    elif $IS_MAC && [[ -f "/var/log/cloudflared/cloudflared.log" ]]; then
+        if tail -5 /var/log/cloudflared/cloudflared.log 2>/dev/null | grep -qi "Registered tunnel connection"; then
+            _tunnel_ok=true
+        else
+            # Process alive but no registered connections yet — may still be starting
+            _tunnel_ok=true
+        fi
+    else
+        _tunnel_ok=true
+    fi
 else
     if $IS_MAC; then
-        err "cloudflared may not be running -- check: sudo launchctl list | grep cloudflare"
-        err "Logs: cat /var/log/cloudflared/cloudflared.err"
+        # Check if it started and immediately crashed
+        if [[ -f "/var/log/cloudflared/cloudflared.err" ]]; then
+            _last_err=$(tail -3 /var/log/cloudflared/cloudflared.err 2>/dev/null)
+            err "cloudflared is not running. Last error:"
+            echo "$_last_err" | sed 's/^/    /'
+            echo ""
+        else
+            err "cloudflared is not running."
+        fi
+        err "Check: sudo launchctl list | grep cloudflare"
+        err "Logs:  cat /var/log/cloudflared/cloudflared.err"
     else
         err "cloudflared may not be running -- check: sudo systemctl status cloudflared"
     fi
 fi
 
-echo ""
-echo "  ================================================"
-echo "    Done!  Home machine is ready."
-echo "  ================================================"
-echo ""
-echo "  Now run the WORK machine installer on the machine"
-echo "  you connect FROM."
-if [[ -n "$SSH_HOST" ]]; then
-    echo "    Browser : https://$SSH_HOST"
-    echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+if $_tunnel_ok; then
+    ok "cloudflared is running"
+    echo ""
+    echo "  ================================================"
+    echo -e "    ${G}${B}Done!  Home machine is ready.${X}"
+    echo "  ================================================"
+    echo ""
+    echo "  Now run the WORK machine installer on the machine"
+    echo "  you connect FROM."
+    if [[ -n "$SSH_HOST" ]]; then
+        echo "    Browser : https://$SSH_HOST"
+        echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+    fi
+    echo ""
 fi
-echo ""
