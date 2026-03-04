@@ -1,7 +1,7 @@
 # erebus-edge
 
-Connect from a hostile corporate Windows environment to your home machine and
-Tailscale network -- no admin, no VPN, no IT ticket.
+SSH into your home machine from a locked-down corporate network.
+No admin, no VPN, no IT ticket.
 
 ```
 Work machine (no admin, corporate proxy)
@@ -12,64 +12,82 @@ Work machine (no admin, corporate proxy)
   |
   |--> CLI SSH --> cloudflared ProxyCommand --> CF Tunnel --> home SSH
   |
-  `--> bin/tsnet.exe (userspace Tailscale, no admin)
+  `--> tsnet (userspace Tailscale, no admin)
         --> any Tailscale peer via DERP relay
 ```
 
-**Why it works on corporate networks:** `*.workers.dev` is in `no_proxy` on most
-managed Windows machines. Traffic goes direct to Cloudflare's edge without hitting the
-corporate proxy or SSL inspection.
+**Why it works on corporate networks:** `*.workers.dev` is on the `no_proxy`
+list of most managed Windows machines. Traffic goes direct to Cloudflare's
+edge without hitting the corporate proxy or SSL inspection.
+
+Every user deploys their **own** instance to their **own** Cloudflare account.
+Share the repo/zip -- not the URL.
 
 ---
 
-## Requirements
+## Quick start
 
-- Python 3.11+ (user install -- no admin, from [python.org](https://python.org))
-- A [Cloudflare account](https://dash.cloudflare.com/sign-up) (free tier is fine)
+### 1. Run bootstrap (any machine, no Python needed)
 
----
+```bash
+# macOS / Linux
+./installers/bootstrap.sh --email you@example.com
 
-## Setup (one time)
-
-### 1. Run bootstrap on any machine with Python
-
-```
-python src/bootstrap.py --email you@example.com
+# Windows (cmd or PowerShell)
+installers\bootstrap.bat --email you@example.com
 ```
 
-This opens your browser to log in to Cloudflare, then automatically:
+Opens your browser to create a Cloudflare API token, then automatically:
 
 - Creates a scoped API token + CF Tunnel
-- Deploys the SSH Worker
+- Deploys the SSH proxy Worker (`ssh.SUB.workers.dev`)
+- Deploys the Tailscale relay Worker (`ts-relay.SUB.workers.dev`)
 - Sets up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
-- Optionally builds `bin/tsnet.exe` (userspace Tailscale)
-Flags:
+- Optionally builds a `tsnet` binary (userspace Tailscale)
+
+All artifacts go to `../erebus-temp/` -- the repo stays clean.
+
+<details>
+<summary>Bootstrap flags</summary>
 
 | Flag | Purpose |
 |------|---------|
-| `--redeploy` | Re-deploy Workers + rebuild tsnet |
+| `--email EMAIL` | Email(s) to allow through CF Access (repeatable) |
+| `--cf-token TOKEN` | Pass CF API token directly (skip browser flow) |
+| `--save-token` | Save token to Keychain/DPAPI/file |
+| `--redeploy` | Re-deploy Workers with existing config |
 | `--build-tsnet` | Only rebuild tsnet binary |
-| `--skip-tsnet` | Skip Go download + build |
-| `--skip-access` | Skip CF Zero Trust Access |
+| `--skip-tsnet` | Skip Go download + tsnet build |
+| `--skip-access` | Skip CF Zero Trust Access setup |
+| `--workers-only` | Skip tunnel/Access, just deploy Workers |
+
+</details>
 
 ### 2. Set up your home machine
 
-Copy the installer that matches your home machine's OS from `installers/`.
-Bootstrap prints the exact command with your token -- copy-paste it.
+Bootstrap prints the exact command with your token. Copy-paste it.
 
-| Home machine OS | File | How to run |
-|-----------------|------|------------|
-| Linux / Mac | `installers/home_linux_mac.sh` | `sudo ./home_linux_mac.sh --token <TOKEN> --ca-key "<KEY>" --ssh-host <HOST>` |
-| Windows | `installers/home_windows.bat` | Run as Administrator: `home_windows.bat <TOKEN> <CA_KEY> <HOST>` |
+```bash
+# Default: interactive mode picker (no sudo needed)
+./installers/home_linux_mac.sh --token <TOKEN> --ca-key "<KEY>" --ssh-host <HOST>
+
+# Windows (as Administrator)
+installers\home_windows.bat <TOKEN> "<CA_KEY>" <HOST>
+```
+
+The script asks whether you want **Quick start** (no sudo, foreground tunnel)
+or **Full system setup** (sudo, auto-starts on boot). Pass `--sudo` or
+`--no-sudo` to skip the prompt.
 
 ### 3. Set up your work machine
 
-Copy the installer that matches your work machine's OS from `installers/`.
+```bash
+# macOS / Linux
+./installers/work_linux_mac.sh --ssh-host <HOST>
 
-| Work machine OS | File | How to run |
-|-----------------|------|------------|
-| Linux / Mac | `installers/work_linux_mac.sh` | `./work_linux_mac.sh --ssh-host <HOST>` |
-| Windows | `installers/work_windows.bat` | `work_windows.bat <HOST>` (no admin needed) |
+# Windows (no admin needed)
+installers\work_windows.bat <HOST>
+```
 
 Windows `.bat` files work even when GPO blocks PowerShell.
 No secrets in the installer files -- tokens are passed as arguments at run time.
@@ -99,45 +117,50 @@ First run asks for your home username and SSH port, saves to `cf_config.txt`.
 
 Connect to any peer on your Tailscale network:
 
-```
-bin\tsnet.exe up          # connect + auth
-bin\tsnet.exe status      # list peers
-ssh -o "ProxyCommand=bin\tsnet.exe proxy %h %p" user@peer
+```bash
+tsnet up              # connect + auth
+tsnet status          # list peers
+ssh -o "ProxyCommand=tsnet proxy %h %p" user@peer
 ```
 
-> **Note:** tsnet requires `controlplane.tailscale.com` to be reachable. Networks
-> with deep-packet inspection (DPI) that block Tailscale will prevent this.
-> Use Options A/B (CF Tunnel) as the reliable fallback.
+> **Note:** tsnet requires `controlplane.tailscale.com` to be reachable.
+> The ts-relay Worker proxies this through `workers.dev` to bypass DPI,
+> but some networks may still block it. Use Options A/B as the reliable fallback.
 
 ---
 
 ## Project structure
 
 ```
-README.md / LICENSE       You are here
+README.md / LICENSE         You are here
 
-src/                      All source code
-  bootstrap.py              Main entry point -- run this first
-  connect.bat               CLI SSH (Windows cmd)
-  connect.sh                CLI SSH (bash / Mac / Linux)
-  cf_creds.py               DPAPI-encrypted CF token storage
-  config.py                 Config loader
-  setup_cf_access.py        CF Zero Trust Access + SSH CA setup
-  deploy_ts_relay_worker.py Tailscale relay Worker deploy
+installers/                 Standalone installers (no Python, no secrets)
+  bootstrap.sh                Bootstrap wizard (macOS/Linux)
+  bootstrap.bat               Bootstrap wizard (Windows)
+  home_linux_mac.sh           Home machine setup (Linux/Mac)
+  home_windows.bat            Home machine setup (Windows)
+  work_linux_mac.sh           Work machine setup (Linux/Mac)
+  work_windows.bat            Work machine setup (Windows)
 
-tsnet/                    Go source for bin/tsnet.exe (optional)
+src/                        Python reference implementation (legacy)
+  bootstrap.py                Original Python bootstrap wizard
+  connect.bat / connect.sh    CLI SSH connect scripts
+  cf_creds.py                 DPAPI credential store (Windows)
+  config.py                   Config loader
+  setup_cf_access.py          CF Zero Trust Access setup
+  deploy_ts_relay_worker.py   Tailscale relay Worker deploy
+
+tsnet/                      Go source for userspace Tailscale (optional)
   main.go
   go.mod
 
-installers/               Standalone installer scripts (no secrets)
-  home_linux_mac.sh         Run on home machine (Linux/Mac)
-  home_windows.bat          Run on home machine (Windows)
-  work_linux_mac.sh         Run on work machine (Linux/Mac)
-  work_windows.bat          Run on work machine (Windows)
-
-keys/                     Secrets + config (gitignored)
-  portal_config.json        Account IDs, subdomain, tunnel ID
-  cf_creds.dpapi            DPAPI-encrypted CF API token
+../erebus-temp/             Created by bootstrap (gitignored, outside repo)
+  keys/
+    portal_config.json        Account IDs, subdomain, tunnel ID, etc.
+  bin/
+    cloudflared               Downloaded if not in PATH
+    tsnet                     Built from source (optional)
+  cf_config.txt               Saved SSH settings
 ```
 
 ---
@@ -147,9 +170,10 @@ keys/                     Secrets + config (gitignored)
 - **No static SSH keys** -- CF generates short-lived certificates per session
 - **Email OTP gate** -- CF Access requires identity verification before SSH
 - **Origin-side JWT validation** -- cloudflared validates Access JWT on the home machine
-- **DPAPI encryption** -- CF API token encrypted at rest (tied to Windows login)
+- **Per-platform credential storage** -- macOS Keychain, Linux file (0600), Windows DPAPI
 - **No admin required** -- everything runs in userspace on the work machine
-- All secrets in `keys/` (gitignored)
+- **No secrets in repo** -- all artifacts go to `../erebus-temp/` (outside the repo)
+- **Scoped API tokens** -- bootstrap creates tokens with only the 4 required permissions
 
 ---
 
@@ -160,3 +184,9 @@ keys/                     Secrets + config (gitignored)
 
 Cloudflare Workers, Tunnels, and Access are subject to [Cloudflare's Terms of Service](https://www.cloudflare.com/terms/).
 Tailscale services are subject to [Tailscale's Terms of Service](https://tailscale.com/terms).
+
+---
+
+## License
+
+MIT -- see [LICENSE](LICENSE).

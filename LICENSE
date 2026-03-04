@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2025 ad9840724
+Copyright (c) 2025-2026 mockingb1rdblue
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -27,13 +27,10 @@ Third-party components:
 cloudflared (Cloudflare, Inc.) — Apache License 2.0
   https://github.com/cloudflare/cloudflared
 
-ttyd (tsl0922) — MIT License
-  https://github.com/tsl0922/ttyd
-
 tailscale/tsnet (Tailscale Inc.) — BSD 3-Clause License
   https://github.com/tailscale/tailscale
   This project uses tsnet as a Go library dependency (not a fork or derivative work).
-  The tsnet binary (bin/tsnet.exe) is built from source at setup time.
+  The tsnet binary is built from source at setup time.
 
 ---
 
