@@ -93,8 +93,11 @@ elif d is not None: print(d)" "$path"
 json_py() {
     python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-$1"
+try:
+    d = json.load(sys.stdin)
+except:
+    d = {}
+$1" 2>/dev/null
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -430,16 +433,16 @@ pick_account() {
 r = d.get('result', [])
 print(len(r))")
 
-    if [ "$count" = "0" ] || [ -z "$count" ]; then
+    if [ "${count:-0}" = "0" ] || [ -z "$count" ]; then
         err "No CF accounts found. Check token permissions."
-        exit 1
+        return 1
     fi
 
     if [ "$count" = "1" ]; then
         ACCT_ID=$(echo "$accounts_json" | json_get "result[0].id")
         ACCT_NAME=$(echo "$accounts_json" | json_get "result[0].name")
         ok "Account: $ACCT_NAME"
-        return
+        return 0
     fi
 
     printf "\n  ${B}Select account:${X}\n"
@@ -452,6 +455,7 @@ for i, a in enumerate(d.get('result',[]), 1):
     ACCT_ID=$(echo "$accounts_json" | json_py "print(d['result'][int(sys.argv[1])-1]['id'])" "$choice" 2>/dev/null)
     ACCT_NAME=$(echo "$accounts_json" | json_py "print(d['result'][int(sys.argv[1])-1]['name'])" "$choice" 2>/dev/null)
     [ -z "$ACCT_ID" ] && { ACCT_ID=$(echo "$accounts_json" | json_get "result[0].id"); ACCT_NAME=$(echo "$accounts_json" | json_get "result[0].name"); }
+    return 0
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -602,8 +606,44 @@ print(json.dumps({
     return 1
 }
 
+_offer_save_token() {
+    if [ "$ARG_SAVE_TOKEN" = "true" ]; then
+        store_credential "$TOKEN"
+        return
+    fi
+    printf "\n  ${B}Save credentials?${X}\n"
+    if [ "$OS" = "darwin" ]; then
+        printf "  ${B}1${X}  Yes -- macOS Keychain (encrypted, tied to this login)\n"
+    else
+        printf "  ${B}1${X}  Yes -- encrypted file in $KEYS_DIR\n"
+    fi
+    printf "  ${B}2${X}  No  -- session only\n"
+    printf "\n  [1/2]: "
+    read -r save_choice
+    [ "$save_choice" != "2" ] && store_credential "$TOKEN"
+}
+
 step_auth() {
     hdr "Step 1: Authenticate with Cloudflare"
+
+    # --cf-token flag: non-interactive auth
+    if [ -n "$ARG_CF_TOKEN" ]; then
+        TOKEN="$ARG_CF_TOKEN"
+        local verify
+        verify=$(curl -sk \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Content-Type: application/json" \
+            "${CF_API}/accounts" 2>/dev/null)
+        local has_accts
+        has_accts=$(echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')")
+        if [ "$has_accts" != "yes" ]; then
+            err "Provided --cf-token is invalid (no accounts found)."
+            exit 1
+        fi
+        ok "Token verified via --cf-token."
+        [ "$ARG_SAVE_TOKEN" = "true" ] && store_credential "$TOKEN"
+        return
+    fi
 
     # Try stored credential
     local stored
@@ -615,8 +655,8 @@ step_auth() {
             -H "Content-Type: application/json" \
             "${CF_API}/accounts" 2>/dev/null)
         local has_accts
-        has_accts=$(echo "$verify" | json_py "print(len(d.get('result',[])) > 0)")
-        if [ "$has_accts" = "True" ]; then
+        has_accts=$(echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')")
+        if [ "$has_accts" = "yes" ]; then
             ok "Using stored Cloudflare credentials."
             TOKEN="$stored"
             return
@@ -640,7 +680,10 @@ step_auth() {
                 -H "Authorization: Bearer $broad" \
                 -H "Content-Type: application/json" \
                 "${CF_API}/accounts" 2>/dev/null)
-            pick_account "$accts_resp"
+            if ! pick_account "$accts_resp"; then
+                err "No accounts found with this login."
+                exit 1
+            fi
             local scoped
             scoped=$(create_scoped_token "$broad" "$ACCT_ID")
             if [ -n "$scoped" ]; then
@@ -649,17 +692,7 @@ step_auth() {
                 warn "Could not create scoped token. Using broad login token."
                 TOKEN="$broad"
             fi
-            # Offer to save
-            printf "\n  ${B}Save credentials?${X}\n"
-            if [ "$OS" = "darwin" ]; then
-                printf "  ${B}1${X}  Yes -- macOS Keychain (encrypted, tied to this login)\n"
-            else
-                printf "  ${B}1${X}  Yes -- encrypted file in $KEYS_DIR\n"
-            fi
-            printf "  ${B}2${X}  No  -- session only\n"
-            printf "\n  [1/2]: "
-            read -r save_choice
-            [ "$save_choice" != "2" ] && store_credential "$TOKEN"
+            _offer_save_token
             return
         fi
         warn "Browser login failed. Falling back to manual token."
@@ -673,16 +706,7 @@ step_auth() {
     read -rs tok; echo ""
     [ -z "$tok" ] && { err "No token provided."; exit 1; }
     TOKEN="$tok"
-    printf "\n  ${B}Save credentials?${X}\n"
-    if [ "$OS" = "darwin" ]; then
-        printf "  ${B}1${X}  Yes -- macOS Keychain\n"
-    else
-        printf "  ${B}1${X}  Yes -- encrypted file\n"
-    fi
-    printf "  ${B}2${X}  No  -- session only\n"
-    printf "\n  [1/2]: "
-    read -r save_choice
-    [ "$save_choice" != "2" ] && store_credential "$TOKEN"
+    _offer_save_token
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -692,7 +716,9 @@ step_discover() {
     hdr "Step 2: Discover account & workers.dev subdomain"
     local accts_resp
     accts_resp=$(cf_api GET "/accounts")
-    pick_account "$accts_resp"
+    if ! pick_account "$accts_resp"; then
+        exit 1
+    fi
 
     # Get workers.dev subdomain
     local sub_resp
@@ -1231,6 +1257,11 @@ step_build_tsnet() {
     if ! curl --connect-timeout 5 -sk "https://controlplane.tailscale.com/key?v=71" >/dev/null 2>&1; then
         warn "Tailscale control plane unreachable (likely corporate firewall)"
         warn "tsnet build will likely fail. CF Tunnel SSH is the recommended path."
+        if [ -n "$ARG_CF_TOKEN" ]; then
+            # Non-interactive: auto-skip
+            ok "Skipping tsnet build (non-interactive, control plane unreachable)."
+            return 1
+        fi
         echo ""
         printf "  ${B}1${X}  Skip tsnet (recommended)\n"
         printf "  ${B}2${X}  Try anyway\n"
@@ -1357,6 +1388,8 @@ ARG_SKIP_ACCESS=false
 ARG_SKIP_TSNET=false
 ARG_BUILD_TSNET=false
 ARG_WORKERS_ONLY=false
+ARG_CF_TOKEN=""
+ARG_SAVE_TOKEN=false
 ARG_EMAILS=()
 
 while [ $# -gt 0 ]; do
@@ -1366,18 +1399,44 @@ while [ $# -gt 0 ]; do
         --skip-tsnet)   ARG_SKIP_TSNET=true ;;
         --build-tsnet)  ARG_BUILD_TSNET=true ;;
         --workers-only) ARG_WORKERS_ONLY=true ;;
+        --cf-token)     shift; ARG_CF_TOKEN="$1" ;;
+        --save-token)   ARG_SAVE_TOKEN=true ;;
         --email)        shift; ARG_EMAILS+=("$1") ;;
         -h|--help)
-            echo "Usage: $0 [OPTIONS]"
-            echo ""
-            echo "Options:"
-            echo "  --email EMAIL     Email for CF Access policy (repeatable)"
-            echo "  --redeploy        Re-deploy Workers with existing config"
-            echo "  --skip-access     Skip CF Access setup"
-            echo "  --skip-tsnet      Skip tsnet build step"
-            echo "  --build-tsnet     Only rebuild tsnet binary"
-            echo "  --workers-only    Skip tunnel/Access, just deploy Workers"
-            echo "  -h, --help        Show this help"
+            cat <<'HELPEOF'
+Usage: bootstrap.sh [OPTIONS]
+
+SSH Portal bootstrap wizard. Sets up CF Tunnel, Workers, Access, and
+optionally tsnet on your Cloudflare account.
+
+Authentication:
+  --cf-token TOKEN    CF API token (skips interactive auth prompt)
+                      Token needs: Cloudflare Tunnel Edit, Workers Script Edit,
+                      Workers KV Storage Edit, Zero Trust Edit
+  --save-token        Auto-save token to Keychain/file (no prompt)
+
+Access control:
+  --email EMAIL       Email for CF Access OTP policy (repeatable)
+                      If omitted and --skip-access is not set, prompts interactively
+
+Modes:
+  --redeploy          Re-deploy Workers using existing config (skip tunnel/KV setup)
+  --workers-only      Skip tunnel/Access, just deploy Workers
+  --build-tsnet       Only rebuild the tsnet binary (skip everything else)
+
+Skip flags:
+  --skip-access       Skip CF Zero Trust Access setup
+  --skip-tsnet        Skip tsnet binary build
+
+Other:
+  -h, --help          Show this help
+
+Non-interactive example (fully automated):
+  ./bootstrap.sh --cf-token "YOUR_TOKEN" --save-token \
+    --email user@example.com --skip-tsnet
+
+Artifacts are written to ../erebus-temp/ (repo stays clean).
+HELPEOF
             exit 0
             ;;
         *)
@@ -1464,7 +1523,8 @@ main() {
 
     # CF Access: collect emails
     local -a emails=("${ARG_EMAILS[@]}")
-    if [ "$ARG_SKIP_ACCESS" != "true" ] && [ "$ARG_WORKERS_ONLY" != "true" ] && [ ${#emails[@]} -eq 0 ]; then
+    if [ "$ARG_SKIP_ACCESS" != "true" ] && [ "$ARG_WORKERS_ONLY" != "true" ] && [ ${#emails[@]} -eq 0 ] && [ -z "$ARG_CF_TOKEN" ]; then
+        # Only prompt interactively if not using --cf-token (non-interactive mode)
         printf "\n  ${B}CF Zero Trust Access${X} protects the terminal (shell on home machine).\n"
         printf "  Enter email addresses to allow. Press Enter with no input to skip.\n"
         while true; do
