@@ -715,7 +715,7 @@ _do_dashboard_auth() {
 
     printf "  ${B}Create your API token — step by step:${X}\n\n"
     printf "  ${C}1.${X} Click ${B}Create Token${X}\n"
-    printf "  ${C}2.${X} Scroll to the bottom, click ${B}Get started${X} (Custom Token)\n"
+    printf "  ${C}2.${X} At the top, click ${B}Get started${X} next to Custom Token\n"
     printf "  ${C}3.${X} Token name: ${B}ssh-portal${X}\n"
     printf "  ${C}4.${X} Add these 4 permissions (click ${B}+ Add more${X} for each):\n\n"
     printf "       ${D}Scope${X}      ${D}Resource${X}                    ${D}Access${X}\n"
