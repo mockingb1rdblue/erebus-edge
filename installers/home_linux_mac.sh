@@ -4,20 +4,21 @@
 #  Run this on the machine you want to SSH INTO (your home server).
 #
 #  Usage:
+#    ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]
 #    sudo ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]
-#    ./home_linux_mac.sh --no-sudo --token <TUNNEL_TOKEN> [--ssh-host <HOST>]
+#
+#  By default runs WITHOUT sudo (safe mode):
+#    - Installs cloudflared to ~/.local/bin/
+#    - Runs tunnel in foreground (stops when terminal closes)
+#    - Prints manual instructions for SSH CA trust
+#
+#  Running with sudo (or --sudo flag) enables full system setup:
+#    - Installs cloudflared system-wide
+#    - Registers as a system service (auto-starts on boot)
+#    - Configures SSH CA trust in /etc/ssh/
+#    - Enables SSH server if needed
 #
 #  bootstrap.sh prints the exact command with your token.
-#
-#  Why sudo?
-#    The default mode installs cloudflared as a system service (auto-starts
-#    on boot) and configures SSH certificate trust in /etc/ssh/. These are
-#    system-level operations that require root.
-#
-#    --no-sudo mode: installs cloudflared to ~/.local/bin/ and runs the
-#    tunnel in the foreground (you'll need to keep a terminal open or set
-#    up your own autostart). SSH CA trust is skipped (manual instructions
-#    provided).
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -25,13 +26,13 @@ set -euo pipefail
 TOKEN=""
 SSH_CA_KEY=""
 SSH_HOST=""
-NO_SUDO=false
+FORCE_SUDO=false
+FORCE_NO_SUDO=false
 
 show_help() {
     cat <<'HELP'
 Usage:
-  sudo ./home_linux_mac.sh --token <TUNNEL_TOKEN> [OPTIONS]
-  ./home_linux_mac.sh --no-sudo --token <TUNNEL_TOKEN> [OPTIONS]
+  ./home_linux_mac.sh --token <TUNNEL_TOKEN> [OPTIONS]
 
 Required:
   --token <TOKEN>       Cloudflare Tunnel token (from bootstrap.sh output)
@@ -39,63 +40,109 @@ Required:
 Options:
   --ca-key <KEY>        SSH CA public key for short-lived certificates
   --ssh-host <HOST>     Your SSH hostname (e.g. ssh.you.workers.dev)
-  --no-sudo             Install without root (user-local, foreground tunnel)
+  --sudo                Run in full system mode (install service, configure sshd)
+  --no-sudo             Run in user mode even if launched with sudo
   --help, -h            Show this help
 
-Why does the default mode need sudo?
-  1. Installs cloudflared to /usr/local/bin/ (system PATH)
-  2. Registers cloudflared as a system service (auto-starts on boot)
-  3. Enables SSH server if not already running
-  4. Writes SSH CA key to /etc/ssh/ (short-lived certificate trust)
-  5. Restarts sshd to apply config changes
+Default behavior (no sudo):
+  - Installs cloudflared to ~/.local/bin/ (your user PATH)
+  - Runs the tunnel in the foreground (Ctrl+C to stop)
+  - Prints SSH CA trust commands for you to run manually
+  - No system files are modified
 
-What --no-sudo does differently:
-  - Installs cloudflared to ~/.local/bin/ (user PATH)
-  - Runs tunnel in foreground (no auto-start on boot)
-  - Skips SSH server check (you must ensure sshd is running)
-  - Skips SSH CA config (prints manual instructions instead)
+With sudo (full system setup):
+  1. Enables SSH server if not already running
+  2. Installs cloudflared to /usr/local/bin/ (system PATH)
+  3. Registers cloudflared as a system service (auto-starts on boot)
+  4. Writes SSH CA key to /etc/ssh/ca.pub
+  5. Adds TrustedUserCAKeys to /etc/ssh/sshd_config
+  6. Restarts sshd to apply changes
 HELP
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --token)    TOKEN="$2";      shift 2 ;;
-        --ca-key)   SSH_CA_KEY="$2"; shift 2 ;;
-        --ssh-host) SSH_HOST="$2";   shift 2 ;;
-        --no-sudo)  NO_SUDO=true;    shift ;;
+        --token)    TOKEN="$2";         shift 2 ;;
+        --ca-key)   SSH_CA_KEY="$2";    shift 2 ;;
+        --ssh-host) SSH_HOST="$2";      shift 2 ;;
+        --sudo)     FORCE_SUDO=true;    shift ;;
+        --no-sudo)  FORCE_NO_SUDO=true; shift ;;
         --help|-h)  show_help ;;
         *) echo "Unknown argument: $1 (try --help)"; exit 1 ;;
     esac
 done
 
 if [[ -z "$TOKEN" ]]; then
-    echo "Usage: sudo $0 --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]"
-    echo "       $0 --no-sudo --token <TUNNEL_TOKEN> [--ssh-host <HOST>]"
+    echo "Usage: ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]"
     echo ""
     echo "Run './installers/bootstrap.sh' first -- it prints the exact command."
-    echo "Use --help for details on why sudo is needed and how to avoid it."
+    echo "Use --help for details on sudo vs no-sudo modes."
     exit 1
 fi
 
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; X='\033[0m'
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; B='\033[1m'; D='\033[2m'; X='\033[0m'
 ok()   { echo -e "${G}[OK]${X}   $*"; }
 info() { echo -e "${Y}[..]${X}   $*"; }
 err()  { echo -e "${R}[!!]${X}   $*" >&2; }
 
 IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
 
+# ── Determine sudo mode ─────────────────────────────────────────
+# Default: no-sudo (safe). Upgrade to sudo if explicitly requested or if
+# already running as root (e.g. user did `sudo ./home_linux_mac.sh`).
+USE_SUDO=false
+
+if $FORCE_NO_SUDO; then
+    USE_SUDO=false
+elif $FORCE_SUDO; then
+    USE_SUDO=true
+elif [[ $EUID -eq 0 ]]; then
+    # Already running as root — they chose sudo, honour it
+    USE_SUDO=true
+elif [[ -t 0 ]]; then
+    # Interactive terminal, not root — explain the choice
+    echo ""
+    echo -e "  ${B}Choose setup mode:${X}"
+    echo ""
+    echo -e "  ${C}[1]${X} Quick start ${D}(default, no sudo needed)${X}"
+    echo -e "      Installs cloudflared to ~/.local/bin/"
+    echo -e "      Runs tunnel in foreground (stops when terminal closes)"
+    echo -e "      SSH CA trust: prints commands for you to run manually"
+    echo ""
+    echo -e "  ${C}[2]${X} Full system setup ${D}(requires sudo password)${X}"
+    echo -e "      Installs cloudflared system-wide (/usr/local/bin/)"
+    echo -e "      Registers as a service (auto-starts on boot)"
+    echo -e "      Configures SSH CA trust in /etc/ssh/ automatically"
+    echo -e "      Enables SSH server if not running"
+    echo ""
+    echo -ne "  ${B}Choice [1/2]:${X} "
+    read -r choice
+    case "$choice" in
+        2) USE_SUDO=true ;;
+        *) USE_SUDO=false ;;
+    esac
+fi
+
 echo ""
 echo "  ================================================"
 echo "    erebus-edge -- Home Machine Setup (Linux/Mac)"
 echo "  ================================================"
+if $USE_SUDO; then
+    echo -e "    Mode: ${C}Full system setup${X} (sudo)"
+else
+    echo -e "    Mode: ${C}Quick start${X} (no sudo)"
+fi
 echo ""
 
 # ── 1. Ensure SSH server is running ───────────────────────────────
-if $NO_SUDO; then
-    info "Skipping SSH server check (--no-sudo mode)"
-    info "Make sure SSH is enabled: System Settings -> General -> Sharing -> Remote Login (macOS)"
-    info "                          sudo systemctl enable --now ssh (Linux)"
+if ! $USE_SUDO; then
+    info "Skipping SSH server check (no-sudo mode)"
+    if $IS_MAC; then
+        info "Make sure SSH is enabled: System Settings -> General -> Sharing -> Remote Login"
+    else
+        info "Make sure sshd is running: sudo systemctl enable --now ssh"
+    fi
 elif $IS_MAC; then
     if systemsetup -getremotelogin 2>/dev/null | grep -qi "on"; then
         ok "Remote Login (SSH) is enabled"
@@ -132,7 +179,7 @@ else
         *)             err "Unknown arch: $ARCH"; exit 1 ;;
     esac
 
-    if $NO_SUDO; then
+    if ! $USE_SUDO; then
         # User-local install to ~/.local/bin/
         mkdir -p "$_USER_BIN"
         if $IS_MAC; then
@@ -179,35 +226,10 @@ else
     fi
 fi
 
-# ── 3. Register tunnel service ────────────────────────────────────
-if $NO_SUDO; then
-    info "Starting cloudflared tunnel in foreground (--no-sudo mode)..."
-    info "The tunnel will run until you close this terminal or press Ctrl+C."
-    info "To run in background:  nohup cloudflared tunnel run --token <TOKEN> &"
-    echo ""
-    cloudflared tunnel run --token "$TOKEN"
-    # If we get here, cloudflared exited
-    info "cloudflared tunnel stopped."
-    exit 0
-else
-    info "Installing cloudflared tunnel service..."
-    if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
-        ok "Tunnel service installed and started"
-    else
-        if pgrep -x cloudflared &>/dev/null; then
-            info "Reinstalling with current token..."
-            sudo cloudflared service uninstall 2>/dev/null || true
-            sudo cloudflared service install "$TOKEN"
-            ok "Service reinstalled"
-        else
-            err "Service install failed"
-        fi
-    fi
-fi
-
-# ── 4. SSH CA trust (short-lived certificates) ────────────────────
+# ── 3. SSH CA trust (short-lived certificates) ────────────────────
+# Do this BEFORE starting the tunnel (in no-sudo mode the tunnel blocks)
 if [[ -n "$SSH_CA_KEY" ]]; then
-    if $NO_SUDO; then
+    if ! $USE_SUDO; then
         info "SSH CA trust requires root to modify /etc/ssh/sshd_config."
         info "To configure manually, run these commands with sudo:"
         echo ""
@@ -250,7 +272,40 @@ else
     info "No SSH CA key provided -- short-lived certs not configured"
 fi
 
-# ── 5. Verify ─────────────────────────────────────────────────────
+# ── 4. Start tunnel ──────────────────────────────────────────────
+if ! $USE_SUDO; then
+    echo ""
+    echo -e "  ${G}${B}Setup complete! Starting tunnel...${X}"
+    echo ""
+    if [[ -n "$SSH_HOST" ]]; then
+        echo -e "  Browser : ${C}https://$SSH_HOST${X}"
+        echo -e "  CLI     : ssh YOUR_USER@$SSH_HOST"
+        echo ""
+    fi
+    info "Tunnel runs in foreground. Press Ctrl+C to stop."
+    info "To run in background:  nohup cloudflared tunnel run --token <TOKEN> &"
+    echo ""
+    cloudflared tunnel run --token "$TOKEN"
+    # If we get here, cloudflared exited
+    info "cloudflared tunnel stopped."
+    exit 0
+else
+    info "Installing cloudflared tunnel service..."
+    if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
+        ok "Tunnel service installed and started"
+    else
+        if pgrep -x cloudflared &>/dev/null; then
+            info "Reinstalling with current token..."
+            sudo cloudflared service uninstall 2>/dev/null || true
+            sudo cloudflared service install "$TOKEN"
+            ok "Service reinstalled"
+        else
+            err "Service install failed"
+        fi
+    fi
+fi
+
+# ── 5. Verify (sudo mode only — no-sudo exits above) ─────────────
 info "Waiting for tunnel..."
 sleep 5
 if pgrep -x cloudflared &>/dev/null; then
