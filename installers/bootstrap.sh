@@ -150,13 +150,13 @@ find_cloudflared() {
     # 2. System PATH
     if command -v cloudflared &>/dev/null; then
         CLOUDFLARED="$(command -v cloudflared)"
-        ok "cloudflared in PATH: $CLOUDFLARED"
+        ok "cloudflared in PATH: $CLOUDFLARED" >&2
         return 0
     fi
     # 3. Our bin dir
     if [ -x "$BIN_DIR/cloudflared" ]; then
         CLOUDFLARED="$BIN_DIR/cloudflared"
-        ok "cloudflared: $CLOUDFLARED"
+        ok "cloudflared: $CLOUDFLARED" >&2
         return 0
     fi
     return 1
@@ -167,30 +167,30 @@ download_cloudflared() {
     local url
     if [ "$OS" = "darwin" ]; then
         url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${ARCH}.tgz"
-        printf "  Downloading cloudflared (macOS %s) ..." "$ARCH"
+        printf "  Downloading cloudflared (macOS %s) ..." "$ARCH" >&2
         if curl -sL "$url" | tar xz -C "$BIN_DIR" 2>/dev/null; then
             chmod +x "$BIN_DIR/cloudflared"
             CLOUDFLARED="$BIN_DIR/cloudflared"
-            printf " ${G}OK${X}\n"
+            printf " ${G}OK${X}\n" >&2
             return 0
         fi
     else
         url="https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-${ARCH}"
-        printf "  Downloading cloudflared (Linux %s) ..." "$ARCH"
+        printf "  Downloading cloudflared (Linux %s) ..." "$ARCH" >&2
         if curl -sL -o "$BIN_DIR/cloudflared" "$url" 2>/dev/null; then
             chmod +x "$BIN_DIR/cloudflared"
             CLOUDFLARED="$BIN_DIR/cloudflared"
-            printf " ${G}OK${X}\n"
+            printf " ${G}OK${X}\n" >&2
             return 0
         fi
     fi
-    printf " ${R}FAILED${X}\n"
+    printf " ${R}FAILED${X}\n" >&2
     return 1
 }
 
 ensure_cloudflared() {
     find_cloudflared && return 0
-    warn "cloudflared not found. Downloading..."
+    warn "cloudflared not found. Downloading..." >&2
     download_cloudflared
 }
 
@@ -485,24 +485,41 @@ parse_cert_token() {
 }
 
 browser_login() {
+    # stdout is captured by caller — all user messages must go to stderr
     ensure_cloudflared || { warn "Cannot open browser login without cloudflared."; return 1; }
-    mkdir -p "$KEYS_DIR"
-    local cert_path="$KEYS_DIR/cf_login.pem"
-    rm -f "$cert_path"
-    echo ""
-    echo "  Opening Cloudflare in your browser..."
-    printf "  ${D}Log in, select your account, and click Authorize.${X}\n\n"
-    "$CLOUDFLARED" tunnel login --origincert="$cert_path" 2>/dev/null || true
-    [ -f "$cert_path" ] || { warn "Login did not complete (cert not written)."; return 1; }
+    # cloudflared writes cert.pem to ~/.cloudflared/ by default
+    local cert_dir="$HOME/.cloudflared"
+    local cert_path="$cert_dir/cert.pem"
+    # Back up existing cert if present
+    [ -f "$cert_path" ] && mv "$cert_path" "${cert_path}.bak" 2>/dev/null
+    echo "" >&2
+    printf "  ${B}Opening Cloudflare in your browser...${X}\n" >&2
+    printf "  ${Y}ACTION REQUIRED:${X} In the browser window that just opened:\n" >&2
+    printf "    1. Log in to Cloudflare (if not already)\n" >&2
+    printf "    2. Select your account\n" >&2
+    printf "    3. Click ${B}Authorize${X}\n" >&2
+    printf "\n  ${D}Waiting for browser authorization (up to 5 minutes)...${X}\n\n" >&2
+    "$CLOUDFLARED" tunnel login 2>&1 >&2 || true
+    if [ ! -f "$cert_path" ]; then
+        # Restore backup
+        [ -f "${cert_path}.bak" ] && mv "${cert_path}.bak" "$cert_path" 2>/dev/null
+        warn "Login did not complete (cert not written)." >&2
+        return 1
+    fi
     local tok
     tok=$(parse_cert_token "$cert_path")
+    # Copy cert to our keys dir for reference, then restore any backup
+    mkdir -p "$KEYS_DIR"
+    cp "$cert_path" "$KEYS_DIR/cf_login.pem" 2>/dev/null
     rm -f "$cert_path"
+    [ -f "${cert_path}.bak" ] && mv "${cert_path}.bak" "$cert_path" 2>/dev/null
     [ -n "$tok" ] && { echo "$tok"; return 0; }
-    warn "Could not extract token from cert."
+    warn "Could not extract token from cert." >&2
     return 1
 }
 
 create_scoped_token() {
+    # stdout is captured by caller — all user messages go to stderr
     local broad_token="$1" acct_id="$2"
     # Get permission groups
     local groups_resp
@@ -517,7 +534,7 @@ groups = [g for g in d.get('result',[]) if g.get('name') in needed]
 import json; print(json.dumps([{'id':g['id']} for g in groups]))")
 
     if [ -z "$pg_json" ] || [ "$pg_json" = "[]" ]; then
-        warn "Could not resolve CF permission groups."
+        warn "Could not resolve CF permission groups." >&2
         return 1
     fi
 
@@ -532,23 +549,23 @@ import json; print(json.dumps([{'id':g['id']} for g in groups]))")
 ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
 print(len(ts))")
 
-    if [ "${existing_count:-0}" -gt 0 ]; then
-        printf "\n  ${B}Found existing '${PORTAL_TOKEN_NAME}' token(s).${X}\n"
+    if [ "${existing_count:-0}" -gt 0 ] && [ -t 0 ]; then
+        printf "\n  ${B}Found existing '${PORTAL_TOKEN_NAME}' token(s).${X}\n" >&2
         echo "$tokens_resp" | json_py "
 ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
 for t in ts:
     exp = (t.get('expiration_date','') or 'no expiry')[:10]
-    print(f'    . {t[\"name\"]:<30} {t.get(\"status\",\"\")}  exp: {exp}')"
-        printf "\n  ${D}CF never re-exposes token values after creation.${X}\n"
-        printf "\n  ${B}1${X}  Paste the existing token value  ${D}(if you still have it)${X}\n"
-        printf "  ${B}2${X}  Replace -- delete old token(s) and create a fresh one\n"
-        printf "  ${B}3${X}  Create additional token\n"
-        printf "\n  [1/2/3]: "
+    print(f'    . {t[\"name\"]:<30} {t.get(\"status\",\"\")}  exp: {exp}')" >&2
+        printf "\n  ${D}CF never re-exposes token values after creation.${X}\n" >&2
+        printf "\n  ${B}1${X}  Paste the existing token value  ${D}(if you still have it)${X}\n" >&2
+        printf "  ${B}2${X}  Replace -- delete old token(s) and create a fresh one\n" >&2
+        printf "  ${B}3${X}  Create additional token\n" >&2
+        printf "\n  [1/2/3]: " >&2
         read -r ch
         case "$ch" in
             1)
-                printf "  Paste token value: "
-                read -rs tok_val; echo ""
+                printf "  Paste token value: " >&2
+                read -rs tok_val; echo "" >&2
                 [ -n "$tok_val" ] && { echo "$tok_val"; return 0; }
                 ;;
             2)
@@ -563,17 +580,31 @@ for t in ts:
     try: urllib.request.urlopen(req, context=ctx)
     except: pass
 print(len(ts))" >/dev/null
-                ok "Deleted old portal token(s)."
+                ok "Deleted old portal token(s)." >&2
                 ;;
         esac
+    elif [ "${existing_count:-0}" -gt 0 ]; then
+        # Non-interactive: auto-replace existing tokens
+        echo "$tokens_resp" | json_py "
+import urllib.request, json, ssl
+ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
+for t in ts:
+    req = urllib.request.Request('${CF_API}/user/tokens/'+t['id'], method='DELETE')
+    req.add_header('Authorization','Bearer $broad_token')
+    req.add_header('Content-Type','application/json')
+    try: urllib.request.urlopen(req, context=ctx)
+    except: pass
+print(len(ts))" >/dev/null
+        ok "Replaced existing portal token(s)." >&2
     fi
 
     # Create scoped token
-    printf "\n  Creating '${PORTAL_TOKEN_NAME}' token with permissions:\n"
-    printf "  ${D}. Cloudflare Tunnel Edit${X}\n"
-    printf "  ${D}. Workers Script Edit${X}\n"
-    printf "  ${D}. Workers KV Storage Edit${X}\n"
-    printf "  ${D}. Zero Trust Edit${X}\n"
+    printf "\n  Creating '${PORTAL_TOKEN_NAME}' token with permissions:\n" >&2
+    printf "  ${D}. Cloudflare Tunnel Edit${X}\n" >&2
+    printf "  ${D}. Workers Script Edit${X}\n" >&2
+    printf "  ${D}. Workers KV Storage Edit${X}\n" >&2
+    printf "  ${D}. Zero Trust Edit${X}\n" >&2
 
     local payload
     payload=$(python3 -c "
@@ -598,11 +629,11 @@ print(json.dumps({
     local new_tok
     new_tok=$(echo "$result" | json_get "result.value")
     if [ -n "$new_tok" ]; then
-        ok "'${PORTAL_TOKEN_NAME}' token created -- value captured automatically."
+        ok "'${PORTAL_TOKEN_NAME}' token created -- value captured automatically." >&2
         echo "$new_tok"
         return 0
     fi
-    warn "Token creation failed."
+    warn "Token creation failed." >&2
     return 1
 }
 
@@ -634,9 +665,12 @@ _verify_token() {
     echo "$verify" | json_py "print('yes' if len(d.get('result',[])) > 0 else 'no')"
 }
 
-_do_browser_auth() {
-    # Browser OAuth flow: opens browser, creates scoped token, saves.
+_do_cloudflared_login() {
+    # cloudflared tunnel login: zone-picker flow → scoped token.
     # Returns 0 on success (TOKEN is set), 1 on failure.
+    printf "\n  ${Y}NOTE:${X} This grants a certificate with broad account access.\n" >&2
+    printf "  ${D}The script will immediately create a scoped token with only${X}\n" >&2
+    printf "  ${D}the 4 required permissions, but the initial cert is overpowered.${X}\n\n" >&2
     local broad
     broad=$(browser_login)
     if [ -z "$broad" ]; then
@@ -662,6 +696,48 @@ _do_browser_auth() {
     fi
     _offer_save_token
     return 0
+}
+
+_do_dashboard_auth() {
+    # Open CF Dashboard API token page + print step-by-step instructions.
+    local dashboard_url="https://dash.cloudflare.com/profile/api-tokens"
+    printf "\n  ${B}Opening Cloudflare Dashboard...${X}\n\n"
+
+    # Open browser
+    if [ "$OS" = "darwin" ]; then
+        open "$dashboard_url" 2>/dev/null
+    elif command -v xdg-open &>/dev/null; then
+        xdg-open "$dashboard_url" 2>/dev/null
+    else
+        printf "  ${Y}Could not open browser. Go to:${X}\n"
+        printf "  ${C}%s${X}\n\n" "$dashboard_url"
+    fi
+
+    printf "  ${B}Create your API token — step by step:${X}\n\n"
+    printf "  ${C}1.${X} Click ${B}Create Token${X}\n"
+    printf "  ${C}2.${X} Scroll to the bottom, click ${B}Get started${X} (Custom Token)\n"
+    printf "  ${C}3.${X} Token name: ${B}ssh-portal${X}\n"
+    printf "  ${C}4.${X} Add these 4 permissions (click ${B}+ Add more${X} for each):\n\n"
+    printf "       ${D}Scope${X}      ${D}Resource${X}                    ${D}Access${X}\n"
+    printf "       Account    Cloudflare Tunnel           Edit\n"
+    printf "       Account    Workers Scripts              Edit\n"
+    printf "       Account    Workers KV Storage           Edit\n"
+    printf "       Account    Zero Trust                   Edit\n\n"
+    printf "  ${C}5.${X} Account Resources: ${B}All accounts${X} (or pick yours)\n"
+    printf "  ${C}6.${X} Click ${B}Continue to summary${X} -> ${B}Create Token${X}\n"
+    printf "  ${C}7.${X} ${B}Copy the token${X} and paste it below\n"
+    printf "     ${D}(CF only shows it once — copy it now!)${X}\n"
+
+    printf "\n  Paste token: "
+    read -rs tok; echo ""
+    [ -z "$tok" ] && { err "No token provided."; exit 1; }
+    TOKEN="$tok"
+    if [ "$(_verify_token "$TOKEN")" != "yes" ]; then
+        err "Token is invalid (no accounts found). Check permissions and try again."
+        exit 1
+    fi
+    ok "Token verified."
+    _offer_save_token
 }
 
 step_auth() {
@@ -691,44 +767,51 @@ step_auth() {
         warn "Stored token could not be verified -- re-authenticating."
     fi
 
-    # Browser OAuth is the recommended and default method because:
-    #   - Creates a properly scoped token with only the 4 required permissions
-    #   - Token is tied to your CF account, not a global key
-    #   - No need to manually navigate the CF dashboard
-    #   - Token value is captured automatically (CF never re-exposes it)
-    printf "\n  ${B}Browser OAuth${X} is the recommended authentication method.\n"
-    printf "  ${D}It creates a scoped API token with only the permissions needed,${X}\n"
-    printf "  ${D}and captures the token value automatically.${X}\n\n"
+    # Show auth options
+    printf "\n  ${B}Authentication method:${X}\n\n"
+    printf "  ${B}1${X}  Open CF Dashboard + paste token  ${G}(recommended)${X}\n"
+    printf "     ${D}Opens the token creation page with step-by-step instructions.${X}\n"
+    printf "     ${D}You create a token scoped to exactly the 4 permissions needed.${X}\n\n"
+    printf "  ${B}2${X}  Paste an existing API token\n"
+    printf "     ${D}If you already created a token with the right permissions.${X}\n\n"
+    printf "  ${B}3${X}  cloudflared tunnel login  ${D}(power users)${X}\n"
+    printf "     ${D}Opens a zone selector. Grants a broad cert, then auto-creates${X}\n"
+    printf "     ${D}a scoped token. Requires a domain on your CF account.${X}\n"
 
-    # If running with flags (semi-automated), go straight to browser auth
-    local method="1"
-    if [ ${#ARG_EMAILS[@]} -eq 0 ] && [ -t 0 ]; then
-        # Interactive terminal with no pre-set flags — offer choice
-        printf "  ${B}1${X}  Browser OAuth  ${G}(recommended)${X}\n"
-        printf "  ${B}2${X}  Paste API token  ${D}(manual -- from CF Dashboard)${X}\n"
-        printf "\n  [1/2]: "
+    # If running with flags (semi-automated), default to dashboard
+    local method
+    if [ ${#ARG_EMAILS[@]} -gt 0 ] || ! [ -t 0 ]; then
+        method="1"
+        printf "\n  ${G}-->  Using option 1 (dashboard + paste)${X}\n"
+    else
+        printf "\n  [1/2/3]: "
         read -r method
         method="${method:-1}"
-    else
-        printf "  ${G}-->  Opening browser for Cloudflare OAuth...${X}\n"
     fi
 
-    if [ "$method" != "2" ]; then
-        if _do_browser_auth; then
-            return
-        fi
-        warn "Browser login failed. Falling back to manual token."
-    fi
-
-    # Manual paste fallback
-    printf "\n  Dashboard -> My Profile -> API Tokens -> Create Token\n"
-    printf "  Permissions: Cloudflare Tunnel Edit, Workers Script Edit,\n"
-    printf "               Workers KV Storage Edit, Zero Trust Edit\n"
-    printf "\n  Paste token: "
-    read -rs tok; echo ""
-    [ -z "$tok" ] && { err "No token provided."; exit 1; }
-    TOKEN="$tok"
-    _offer_save_token
+    case "$method" in
+        2)
+            printf "\n  Paste your CF API token: "
+            read -rs tok; echo ""
+            [ -z "$tok" ] && { err "No token provided."; exit 1; }
+            TOKEN="$tok"
+            if [ "$(_verify_token "$TOKEN")" != "yes" ]; then
+                err "Token is invalid. Check permissions."
+                exit 1
+            fi
+            ok "Token verified."
+            _offer_save_token
+            ;;
+        3)
+            if ! _do_cloudflared_login; then
+                warn "cloudflared login failed. Try option 1 instead."
+                _do_dashboard_auth
+            fi
+            ;;
+        *)
+            _do_dashboard_auth
+            ;;
+    esac
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1162,16 +1245,17 @@ for rel in releases:
         sys.exit(0)
 print('1.22.3', '')" "$releases" 2>/dev/null || echo "1.22.3 "
     else
-        warn "Could not fetch Go release info."
+        warn "Could not fetch Go release info." >&2
         echo "1.22.3 "
     fi
 }
 
 download_go_toolchain() {
-    # Returns path to go binary, or empty on failure
+    # stdout is captured by caller — all user messages go to stderr
+    # Returns path to go binary on stdout, or empty on failure
     local local_go="$BIN_DIR/go-toolchain/bin/go"
     if [ -x "$local_go" ]; then
-        ok "Go toolchain already present."
+        ok "Go toolchain already present." >&2
         echo "$local_go"
         return 0
     fi
@@ -1180,7 +1264,7 @@ download_go_toolchain() {
     if command -v go &>/dev/null; then
         local go_ver
         go_ver=$(go version 2>/dev/null)
-        ok "System Go: $go_ver"
+        ok "System Go: $go_ver" >&2
         echo "go"
         return 0
     fi
@@ -1195,11 +1279,11 @@ download_go_toolchain() {
     local go_archive="$BIN_DIR/go${go_ver}.${OS}-${ARCH}.tar.gz"
     mkdir -p "$BIN_DIR"
 
-    printf "  Downloading Go %s (~130 MB) ...\n" "$go_ver"
-    printf "  ${D}%s${X}\n" "$go_url"
+    printf "  Downloading Go %s (~130 MB) ...\n" "$go_ver" >&2
+    printf "  ${D}%s${X}\n" "$go_url" >&2
     if ! curl -sL -o "$go_archive" "$go_url" 2>/dev/null; then
-        warn "Go download failed."
-        warn "Install Go manually from https://go.dev/dl/ and re-run: $0 --build-tsnet"
+        warn "Go download failed." >&2
+        warn "Install Go manually from https://go.dev/dl/ and re-run: $0 --build-tsnet" >&2
         rm -f "$go_archive"
         return 1
     fi
@@ -1213,18 +1297,18 @@ download_go_toolchain() {
             actual=$(sha256sum "$go_archive" | awk '{print $1}')
         fi
         if [ "$actual" != "$go_sha" ]; then
-            err "Go archive SHA256 mismatch -- download may be corrupted."
-            err "  expected: $go_sha"
-            err "  got:      $actual"
+            err "Go archive SHA256 mismatch -- download may be corrupted." >&2
+            err "  expected: $go_sha" >&2
+            err "  got:      $actual" >&2
             rm -f "$go_archive"
             return 1
         fi
-        ok "SHA256 verified."
+        ok "SHA256 verified." >&2
     fi
 
-    printf "  Extracting ...\n"
+    printf "  Extracting ...\n" >&2
     if ! tar xzf "$go_archive" -C "$BIN_DIR" 2>/dev/null; then
-        warn "Extraction failed."
+        warn "Extraction failed." >&2
         rm -f "$go_archive"
         return 1
     fi
@@ -1233,12 +1317,12 @@ download_go_toolchain() {
 
     local go_bin="$BIN_DIR/go-toolchain/bin/go"
     if [ ! -x "$go_bin" ]; then
-        err "Go binary not found after extraction."
+        err "Go binary not found after extraction." >&2
         return 1
     fi
     local ver_check
-    ver_check=$("$go_bin" version 2>/dev/null) || { err "Go binary failed self-test."; return 1; }
-    ok "Go toolchain: $ver_check"
+    ver_check=$("$go_bin" version 2>/dev/null) || { err "Go binary failed self-test." >&2; return 1; }
+    ok "Go toolchain: $ver_check" >&2
     echo "$go_bin"
 }
 
@@ -1431,17 +1515,18 @@ Usage: bootstrap.sh [OPTIONS]
 SSH Portal bootstrap wizard. Sets up CF Tunnel, Workers, Access, and
 optionally tsnet on your Cloudflare account.
 
-Authentication (choose one):
-  (default)           Browser OAuth — opens Cloudflare in your browser.
-                      PREFERRED because it:
-                        * Creates a scoped token with only the 4 required permissions
-                        * Captures the token value automatically (CF never re-shows it)
-                        * No manual dashboard navigation needed
-                        * Token is tied to your account, not a global API key
-  --cf-token TOKEN    Pre-made CF API token (skips browser, fully non-interactive).
-                      Token needs permissions: Cloudflare Tunnel Edit,
-                      Workers Script Edit, Workers KV Storage Edit, Zero Trust Edit
+Authentication (choose one, or interactive menu):
+  (default)           Opens CF Dashboard with step-by-step instructions to
+                      create a token scoped to exactly the 4 permissions needed.
+                      RECOMMENDED — minimal permissions, most secure.
+  --cf-token TOKEN    Pre-made CF API token (fully non-interactive, no browser).
+                      Token needs: Cloudflare Tunnel Edit, Workers Scripts Edit,
+                      Workers KV Storage Edit, Zero Trust Edit
   --save-token        Auto-save token to macOS Keychain or Linux file (no prompt)
+
+  Interactive mode also offers:
+    Option 2: Paste an existing token (no browser)
+    Option 3: cloudflared tunnel login (power users, requires a domain on CF)
 
 Access control:
   --email EMAIL       Email for CF Access OTP policy (repeatable)
