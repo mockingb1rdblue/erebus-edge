@@ -6,11 +6,12 @@ REM  Run this on the machine you want to SSH INTO (your home server).
 REM  Pure batch -- works even when PowerShell is blocked by GPO.
 REM
 REM  Usage:
-REM    home_windows.bat --token <TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]
-REM    home_windows.bat --no-admin --token <TOKEN> [--ssh-host <HOST>]
+REM    home_windows.bat                              (auto-reads config)
+REM    home_windows.bat --admin                      (boot service, auto-reads)
+REM    home_windows.bat --restart                    (restart existing service)
+REM    home_windows.bat --token <TOKEN> [OPTIONS]
 REM
-REM  By default: asks whether to do Quick start (no admin) or Full setup.
-REM  bootstrap.sh / bootstrap.bat prints the exact command with your token.
+REM  If bootstrap was run on this machine, just double-click -- no args needed.
 REM ═══════════════════════════════════════════════════════════════════
 
 set "TOKEN="
@@ -18,16 +19,25 @@ set "SSH_CA_KEY="
 set "SSH_HOST="
 set "FORCE_ADMIN="
 set "FORCE_NO_ADMIN="
+set "DO_RESTART="
 
 REM ── Parse arguments ──────────────────────────────────────────────
 :parse_args
 if "%~1"=="" goto :args_done
 if /i "%~1"=="--token"    ( set "TOKEN=%~2"      & shift & shift & goto :parse_args )
+if /i "%~1"=="-token"     ( set "TOKEN=%~2"      & shift & shift & goto :parse_args )
 if /i "%~1"=="--ca-key"   ( set "SSH_CA_KEY=%~2"  & shift & shift & goto :parse_args )
+if /i "%~1"=="-ca-key"    ( set "SSH_CA_KEY=%~2"  & shift & shift & goto :parse_args )
 if /i "%~1"=="--ssh-host" ( set "SSH_HOST=%~2"    & shift & shift & goto :parse_args )
+if /i "%~1"=="-ssh-host"  ( set "SSH_HOST=%~2"    & shift & shift & goto :parse_args )
 if /i "%~1"=="--admin"    ( set "FORCE_ADMIN=1"   & shift & goto :parse_args )
+if /i "%~1"=="-admin"     ( set "FORCE_ADMIN=1"   & shift & goto :parse_args )
 if /i "%~1"=="--no-admin" ( set "FORCE_NO_ADMIN=1" & shift & goto :parse_args )
+if /i "%~1"=="-no-admin"  ( set "FORCE_NO_ADMIN=1" & shift & goto :parse_args )
+if /i "%~1"=="--restart"  ( set "DO_RESTART=1"    & shift & goto :parse_args )
+if /i "%~1"=="-restart"   ( set "DO_RESTART=1"    & shift & goto :parse_args )
 if /i "%~1"=="--help"     goto :show_help
+if /i "%~1"=="-help"      goto :show_help
 if /i "%~1"=="-h"         goto :show_help
 REM Legacy positional args: TOKEN [CA_KEY] [HOST]
 if "%TOKEN%"=="" ( set "TOKEN=%~1" & shift & goto :parse_args )
@@ -39,66 +49,137 @@ goto :parse_args
 :show_help
 echo.
 echo   Usage:
+echo     home_windows.bat                                  (auto-reads config)
+echo     home_windows.bat --admin                          (boot service)
+echo     home_windows.bat --restart                        (restart service)
 echo     home_windows.bat --token ^<TOKEN^> [OPTIONS]
 echo.
-echo   Required:
-echo     --token ^<TOKEN^>       Cloudflare Tunnel token (from bootstrap output)
-echo.
 echo   Options:
+echo     --token ^<TOKEN^>       Cloudflare Tunnel token (from bootstrap output)
 echo     --ca-key ^<KEY^>        SSH CA public key for short-lived certificates
 echo     --ssh-host ^<HOST^>     Your SSH hostname (e.g. ssh.you.workers.dev)
-echo     --admin               Run in full system mode (install service, configure sshd)
+echo     --admin               Install as boot service (requires Run as Administrator)
 echo     --no-admin            Run in user mode (no admin rights needed)
+echo     --restart             Restart the existing cloudflared service
 echo     --help, -h            Show this help
 echo.
-echo   Default behavior (no admin):
-echo     - Installs cloudflared to %%USERPROFILE%%\.local\bin\
-echo     - Runs the tunnel in the foreground (Ctrl+C to stop)
-echo     - Prints SSH CA trust commands for you to run manually
-echo     - No system files are modified
-echo.
-echo   With admin (full system setup):
-echo     1. Installs/enables OpenSSH Server
-echo     2. Installs cloudflared to Program Files
-echo     3. Registers cloudflared as a Windows service (auto-starts on boot)
-echo     4. Writes SSH CA key to %%ProgramData%%\ssh\ca.pub
-echo     5. Adds TrustedUserCAKeys to sshd_config
-echo     6. Restarts sshd service
+echo   If you ran bootstrap on this machine, just double-click with no arguments.
+echo   The script auto-reads your config from portal_config.json.
 echo.
 exit /b 0
 
 :args_done
 
+REM ── Handle --restart (quick path) ────────────────────────────────
+if defined DO_RESTART (
+    echo.
+    echo   Restarting cloudflared service...
+    echo.
+    net session >nul 2>&1
+    if !errorlevel! neq 0 (
+        echo   [!!]  Restart requires Administrator.
+        echo         Right-click this file -^> Run as Administrator
+        echo.
+        pause
+        exit /b 1
+    )
+    net stop cloudflared >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    net start cloudflared >nul 2>&1
+    timeout /t 3 /nobreak >nul
+    sc query cloudflared | findstr /C:"RUNNING" >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo   [OK]  cloudflared service restarted
+    ) else (
+        echo   [!!]  Service did not start. Check: sc query cloudflared
+        echo         If no service exists, run the full installer first:
+        echo         home_windows.bat --admin
+    )
+    echo.
+    exit /b 0
+)
+
 REM ── Auto-read config from bootstrap output if flags not provided ──
 set "_CFG_FILE="
 if exist "%~dp0..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\erebus-temp\keys\portal_config.json"
 if "%_CFG_FILE%"=="" if exist "%~dp0..\..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\erebus-temp\keys\portal_config.json"
+REM Check keys/ inside repo (legacy location)
+if "%_CFG_FILE%"=="" if exist "%~dp0..\keys\portal_config.json" set "_CFG_FILE=%~dp0..\keys\portal_config.json"
 
 if not "%_CFG_FILE%"=="" (
-    REM Use PowerShell to read JSON values (only if PowerShell available)
-    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).tunnel_token" 2^>nul`) do (
-        if "%TOKEN%"=="" set "TOKEN=%%v"
+    REM Try PowerShell first for JSON parsing
+    if "%TOKEN%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).tunnel_token" 2^>nul`) do (
+            set "TOKEN=%%v"
+        )
     )
-    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_ca_public_key" 2^>nul`) do (
-        if "%SSH_CA_KEY%"=="" set "SSH_CA_KEY=%%v"
+    if "%SSH_CA_KEY%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_ca_public_key" 2^>nul`) do (
+            set "SSH_CA_KEY=%%v"
+        )
     )
-    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_host" 2^>nul`) do (
-        if "%SSH_HOST%"=="" set "SSH_HOST=%%v"
+    if "%SSH_HOST%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_host" 2^>nul`) do (
+            set "SSH_HOST=%%v"
+        )
     )
-    if not "%TOKEN%"=="" (
+    REM Fallback: findstr if PowerShell blocked
+    if "!TOKEN!"=="" (
+        for /f "tokens=2 delims=:," %%v in ('findstr /C:"tunnel_token" "%_CFG_FILE%" 2^>nul') do (
+            set "_RAW=%%v"
+            set "_RAW=!_RAW: =!"
+            set "_RAW=!_RAW:"=!"
+            set "TOKEN=!_RAW!"
+        )
+    )
+    if "!SSH_HOST!"=="" (
+        for /f "tokens=2 delims=:," %%v in ('findstr /C:"ssh_host" "%_CFG_FILE%" 2^>nul') do (
+            set "_RAW=%%v"
+            set "_RAW=!_RAW: =!"
+            set "_RAW=!_RAW:"=!"
+            set "SSH_HOST=!_RAW!"
+        )
+    )
+    if not "!TOKEN!"=="" (
         echo.
         echo   Auto-loaded config from: %_CFG_FILE%
     )
 )
 
+REM ── Interactive prompt for token if still missing ────────────────
 if "%TOKEN%"=="" (
     echo.
-    echo   Usage: home_windows.bat [--admin] [--token ^<TOKEN^>] [--ca-key ^<KEY^>] [--ssh-host ^<HOST^>]
+    echo   +-----------------------------------------------------------+
+    echo   ^|  Tunnel token not found -- let's set it up.               ^|
+    echo   +-----------------------------------------------------------+
     echo.
-    echo   If you ran bootstrap.bat from this repo, just run:
-    echo     installers\home_windows.bat
+    echo   Your tunnel token is a long base64 string (starts with 'eyJ...'^).
     echo.
-    echo   It auto-reads the token, SSH CA key, and host from ..\erebus-temp\.
+    echo   Where to find it:
+    echo     1. If you ran bootstrap, it printed the token at the end.
+    echo        It also saved it to: ..\erebus-temp\keys\portal_config.json
+    echo.
+    echo     2. In the Cloudflare Zero Trust dashboard:
+    echo        one.dash.cloudflare.com -^> Networks -^> Tunnels
+    echo        Click your tunnel -^> Configure -^> copy the token
+    echo.
+    echo     3. If someone else set this up for you, ask them for
+    echo        the tunnel token from their bootstrap output.
+    echo.
+    set /p "TOKEN=  Paste your tunnel token here: "
+    echo.
+)
+
+if "%TOKEN%"=="" (
+    echo.
+    echo   Could not determine tunnel token.
+    echo.
+    echo   If you ran bootstrap on this machine, re-run from the repo
+    echo   directory so the script can find the config automatically.
+    echo.
+    echo   Otherwise, pass it directly:
+    echo     home_windows.bat --token ^<YOUR_TOKEN^>
+    echo.
     echo   Use --help for all options.
     echo.
     pause
@@ -114,7 +195,6 @@ if defined FORCE_ADMIN ( set "USE_ADMIN=1" & goto :mode_decided )
 REM Check if running as admin
 net session >nul 2>&1
 if !errorlevel! equ 0 (
-    REM Already admin -- honour it
     set "USE_ADMIN=1"
     goto :mode_decided
 )
@@ -123,14 +203,15 @@ REM Interactive: ask the user
 echo.
 echo   Choose setup mode:
 echo.
-echo   [1] Quick start (default, no admin needed)
+echo   [1] Quick start (no admin needed)
 echo       Installs cloudflared to %%USERPROFILE%%\.local\bin\
 echo       Runs tunnel in foreground (stops when window closes)
 echo       SSH CA trust: prints commands for you to run manually
 echo.
-echo   [2] Full system setup (requires Run as Administrator)
+echo   [2] Install as boot service (recommended, requires Run as Administrator)
 echo       Installs cloudflared system-wide
-echo       Registers as a Windows service (auto-starts on boot)
+echo       Starts on boot automatically -- survives reboots
+echo       Starts the tunnel immediately after install
 echo       Configures SSH CA trust in sshd_config automatically
 echo       Installs/enables OpenSSH Server
 echo.
@@ -155,10 +236,11 @@ echo.
 echo   ================================================
 echo     erebus-edge -- Home Machine Setup (Windows)
 if "%USE_ADMIN%"=="1" (
-    echo     Mode: Full system setup (admin)
+    echo     Mode: Boot service (admin)
 ) else (
     echo     Mode: Quick start (no admin)
 )
+if not "%SSH_HOST%"=="" echo     SSH host: %SSH_HOST%
 echo   ================================================
 echo.
 
@@ -296,19 +378,31 @@ if "%USE_ADMIN%"=="0" (
         echo.
     )
     echo   [..]  Tunnel runs in foreground. Press Ctrl+C to stop.
-    echo   [..]  To run in background, use admin mode (--admin) for a Windows service.
+    echo   [..]  Want it to survive reboots? Re-run with --admin to install as a service.
     echo.
     "!CF_PATH!" tunnel run --token %TOKEN%
     echo   [..]  cloudflared tunnel stopped.
     goto :eof
 )
 
+REM ── Admin mode: install as Windows service ──────────────────────
 echo   [..]  Installing cloudflared tunnel service...
+
+REM Stop existing service if running
+sc query cloudflared >nul 2>&1
+if !errorlevel! equ 0 (
+    echo   [..]  Stopping existing cloudflared service...
+    net stop cloudflared >nul 2>&1
+    timeout /t 2 /nobreak >nul
+    "!CF_PATH!" service uninstall >nul 2>&1
+    timeout /t 2 /nobreak >nul
+)
+
 "!CF_PATH!" service install %TOKEN% >nul 2>&1
 if !errorlevel! equ 0 (
-    echo   [OK]  cloudflared service installed
+    echo   [OK]  cloudflared service installed (starts on boot)
 ) else (
-    REM May already be installed -- try uninstall + reinstall
+    echo   [..]  Retrying service install...
     "!CF_PATH!" service uninstall >nul 2>&1
     timeout /t 2 /nobreak >nul
     "!CF_PATH!" service install %TOKEN% >nul 2>&1
@@ -319,8 +413,8 @@ if !errorlevel! equ 0 (
     )
 )
 
-REM ── 5. Verify (admin mode only) ─────────────────────────────────
-echo   [..]  Waiting for tunnel...
+REM ── 5. Verify ──────────────────────────────────────────────────
+echo   [..]  Waiting for tunnel to connect...
 timeout /t 5 /nobreak >nul
 sc query cloudflared | findstr /C:"RUNNING" >nul 2>&1
 if !errorlevel! equ 0 (
@@ -334,11 +428,17 @@ echo   ================================================
 echo     Done!  Home machine is ready.
 echo   ================================================
 echo.
-echo   Now run the WORK machine installer on the machine
-echo   you connect FROM.
 if not "%SSH_HOST%"=="" (
-    echo     Browser : https://%SSH_HOST%
+    echo   Your SSH endpoint: %SSH_HOST%
+    echo.
+    echo   Connect from your work machine:
+    echo     Browser : https://%SSH_HOST%  (email OTP login)
     echo     CLI     : ssh YOUR_USER@%SSH_HOST%
+    echo.
 )
+echo   Service management:
+echo     Restart : home_windows.bat --restart
+echo     Status  : sc query cloudflared
+echo     Stop    : net stop cloudflared
 echo.
 endlocal

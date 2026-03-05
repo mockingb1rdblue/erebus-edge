@@ -7,24 +7,112 @@ REM  Pure batch -- works even when PowerShell is blocked by GPO.
 REM  No admin needed. Downloads cloudflared to your user directory.
 REM
 REM  Usage:
-REM    work_windows.bat <SSH_HOST>
+REM    work_windows.bat                              (auto-reads config)
+REM    work_windows.bat --ssh-host ssh.you.workers.dev   (skip prompt)
+REM    work_windows.bat ssh.you.workers.dev              (positional)
 REM
-REM  Example:
-REM    work_windows.bat ssh.myname.workers.dev
-REM
-REM  Double-click or run from cmd.
-REM  bootstrap.py prints the exact command with your host.
+REM  If bootstrap was run on this machine, just double-click -- no args needed.
 REM ═══════════════════════════════════════════════════════════════════
 
-set "SSH_HOST=%~1"
+set "SSH_HOST="
+
+REM ── Parse arguments ───────────────────────────────────────────
+:parse_args
+if "%~1"=="" goto :args_done
+if /i "%~1"=="--ssh-host" ( set "SSH_HOST=%~2" & shift & shift & goto :parse_args )
+if /i "%~1"=="-ssh-host"  ( set "SSH_HOST=%~2" & shift & shift & goto :parse_args )
+if /i "%~1"=="--help"     goto :show_help
+if /i "%~1"=="-help"      goto :show_help
+if /i "%~1"=="-h"         goto :show_help
+REM Legacy positional arg
+if "%SSH_HOST%"=="" ( set "SSH_HOST=%~1" & shift & goto :parse_args )
+shift
+goto :parse_args
+
+:show_help
+echo.
+echo   Usage:
+echo     work_windows.bat                                  (auto-reads config)
+echo     work_windows.bat --ssh-host ^<HOST^>                (skip prompt)
+echo     work_windows.bat ^<HOST^>                           (positional)
+echo.
+echo   Options:
+echo     --ssh-host ^<HOST^>    Your SSH hostname (e.g. ssh.you.workers.dev)
+echo     --help, -h           Show this help
+echo.
+echo   If you ran bootstrap on this machine, just double-click with no arguments.
+echo   The script auto-reads your SSH host from the bootstrap config.
+echo.
+exit /b 0
+
+:args_done
+
+REM ── Auto-read config from bootstrap output if not provided ────
+set "_CFG_FILE="
+if exist "%~dp0..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\erebus-temp\keys\portal_config.json"
+if "%_CFG_FILE%"=="" if exist "%~dp0..\..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\erebus-temp\keys\portal_config.json"
+REM Check keys/ inside repo (legacy location)
+if "%_CFG_FILE%"=="" if exist "%~dp0..\keys\portal_config.json" set "_CFG_FILE=%~dp0..\keys\portal_config.json"
+
+if not "%_CFG_FILE%"=="" if "%SSH_HOST%"=="" (
+    REM Try PowerShell first for JSON parsing
+    for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).ssh_host" 2^>nul`) do (
+        set "SSH_HOST=%%v"
+    )
+    REM Fallback: simple findstr extraction if PowerShell is blocked
+    if "!SSH_HOST!"=="" (
+        for /f "tokens=2 delims=:," %%v in ('findstr /C:"ssh_host" "%_CFG_FILE%" 2^>nul') do (
+            set "_RAW=%%v"
+            REM Strip quotes and spaces
+            set "_RAW=!_RAW: =!"
+            set "_RAW=!_RAW:"=!"
+            set "SSH_HOST=!_RAW!"
+        )
+    )
+    if not "!SSH_HOST!"=="" (
+        echo.
+        echo   Auto-loaded config from: %_CFG_FILE%
+    )
+)
+
+REM ── Interactive prompt if still missing ───────────────────────
+if "%SSH_HOST%"=="" (
+    echo.
+    echo   +-----------------------------------------------------------+
+    echo   ^|  SSH host not found -- let's set it up.                   ^|
+    echo   +-----------------------------------------------------------+
+    echo.
+    echo   Your SSH host looks like:  ssh.^<yourname^>.workers.dev
+    echo.
+    echo   Where to find it:
+    echo     1. If you ran bootstrap, it printed your endpoints at the end.
+    echo        Look for the line:  Browser SSH : https://ssh.XXXX.workers.dev
+    echo.
+    echo     2. If someone else set this up for you, ask them for the SSH
+    echo        host -- they'll have it from their bootstrap output.
+    echo.
+    echo     3. If you ran the home/server installer, it showed your SSH
+    echo        host in the banner at the top and the summary at the end.
+    echo.
+    echo     4. You can also find it in the Cloudflare dashboard:
+    echo        dash.cloudflare.com -^> Workers ^& Pages -^> look for 'ssh-proxy'
+    echo        The URL will be listed as: ssh.^<yourname^>.workers.dev
+    echo.
+    set /p "SSH_HOST=  Paste your SSH host here: "
+    echo.
+)
 
 if "%SSH_HOST%"=="" (
     echo.
-    echo   Usage: work_windows.bat ^<SSH_HOST^>
+    echo   Could not determine SSH host.
     echo.
-    echo   Example: work_windows.bat ssh.myname.workers.dev
+    echo   If you ran bootstrap on this machine, re-run from the repo
+    echo   directory so the script can find the config automatically.
     echo.
-    echo   Run "python src\bootstrap.py" first -- it prints the exact command.
+    echo   Otherwise, pass it directly:
+    echo     work_windows.bat --ssh-host ssh.yourname.workers.dev
+    echo.
+    echo   Use --help for all options.
     echo.
     pause
     exit /b 1
@@ -36,6 +124,7 @@ echo.
 echo   ================================================
 echo     erebus-edge -- Work Machine Setup (Windows)
 echo   ================================================
+echo     SSH host: %SSH_HOST%
 echo.
 
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"

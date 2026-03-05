@@ -4,21 +4,12 @@
 #  Run this on the machine you want to SSH INTO (your home server).
 #
 #  Usage:
-#    ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]
-#    sudo ./home_linux_mac.sh --token <TUNNEL_TOKEN> [--ca-key <KEY>] [--ssh-host <HOST>]
+#    ./home_linux_mac.sh                           (auto-reads from config)
+#    ./home_linux_mac.sh --sudo                    (full setup, auto-reads)
+#    ./home_linux_mac.sh --restart                 (restart existing service)
+#    ./home_linux_mac.sh --token <TOKEN> [OPTIONS]
 #
-#  By default runs WITHOUT sudo (safe mode):
-#    - Installs cloudflared to ~/.local/bin/
-#    - Runs tunnel in foreground (stops when terminal closes)
-#    - Prints manual instructions for SSH CA trust
-#
-#  Running with sudo (or --sudo flag) enables full system setup:
-#    - Installs cloudflared system-wide
-#    - Registers as a system service (auto-starts on boot)
-#    - Configures SSH CA trust in /etc/ssh/
-#    - Enables SSH server if needed
-#
-#  bootstrap.sh prints the exact command with your token.
+#  If bootstrap was run on this machine, just run with no arguments.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
@@ -28,51 +19,89 @@ SSH_CA_KEY=""
 SSH_HOST=""
 FORCE_SUDO=false
 FORCE_NO_SUDO=false
+DO_RESTART=false
 
 show_help() {
     cat <<'HELP'
 Usage:
-  ./home_linux_mac.sh                           (auto-reads from ../erebus-temp/)
-  ./home_linux_mac.sh --token <TUNNEL_TOKEN> [OPTIONS]
-
-Required (unless auto-read from bootstrap config):
-  --token <TOKEN>       Cloudflare Tunnel token (from bootstrap.sh output)
+  ./home_linux_mac.sh                           (auto-reads from config)
+  ./home_linux_mac.sh --sudo                    (install as boot service)
+  ./home_linux_mac.sh --restart                 (restart existing service)
+  ./home_linux_mac.sh --token <TOKEN> [OPTIONS]
 
 Options:
+  --token <TOKEN>       Cloudflare Tunnel token (from bootstrap output)
   --ca-key <KEY>        SSH CA public key for short-lived certificates
   --ssh-host <HOST>     Your SSH hostname (e.g. ssh.you.workers.dev)
-  --sudo                Run in full system mode (install service, configure sshd)
+  --sudo                Install as system service (auto-starts on boot)
   --no-sudo             Run in user mode even if launched with sudo
+  --restart             Restart the existing cloudflared service
   --help, -h            Show this help
 
-Default behavior (no sudo):
-  - Installs cloudflared to ~/.local/bin/ (your user PATH)
-  - Runs the tunnel in the foreground (Ctrl+C to stop)
-  - Prints SSH CA trust commands for you to run manually
-  - No system files are modified
-
-With sudo (full system setup):
-  1. Enables SSH server if not already running
-  2. Installs cloudflared to /usr/local/bin/ (system PATH)
-  3. Registers cloudflared as a system service (auto-starts on boot)
-  4. Writes SSH CA key to /etc/ssh/ca.pub
-  5. Adds TrustedUserCAKeys to /etc/ssh/sshd_config
-  6. Restarts sshd to apply changes
+If you ran bootstrap from this repo, just run with no arguments.
+The script auto-reads your config from portal_config.json.
 HELP
     exit 0
 }
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --token)    TOKEN="$2";         shift 2 ;;
-        --ca-key)   SSH_CA_KEY="$2";    shift 2 ;;
-        --ssh-host) SSH_HOST="$2";      shift 2 ;;
-        --sudo)     FORCE_SUDO=true;    shift ;;
-        --no-sudo)  FORCE_NO_SUDO=true; shift ;;
-        --help|-h)  show_help ;;
+        -token|--token)       TOKEN="$2";         shift 2 ;;
+        -ca-key|--ca-key)     SSH_CA_KEY="$2";    shift 2 ;;
+        -ssh-host|--ssh-host) SSH_HOST="$2";      shift 2 ;;
+        -sudo|--sudo)         FORCE_SUDO=true;    shift ;;
+        -no-sudo|--no-sudo)   FORCE_NO_SUDO=true; shift ;;
+        -restart|--restart)   DO_RESTART=true;    shift ;;
+        -help|--help|-h)      show_help ;;
         *) echo "Unknown argument: $1 (try --help)"; exit 1 ;;
     esac
 done
+
+# ── Colors and helpers ─────────────────────────────────────────
+G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; B='\033[1m'; D='\033[2m'; X='\033[0m'
+ok()   { echo -e "${G}[OK]${X}   $*"; }
+info() { echo -e "${Y}[..]${X}   $*"; }
+err()  { echo -e "${R}[!!]${X}   $*" >&2; }
+
+IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
+
+# ── Handle --restart (quick path) ────────────────────────────────
+if $DO_RESTART; then
+    echo ""
+    echo "  Restarting cloudflared service..."
+    echo ""
+    if $IS_MAC; then
+        _PLIST="/Library/LaunchDaemons/com.cloudflare.cloudflared.plist"
+        if [[ -f "$_PLIST" ]]; then
+            sudo launchctl unload "$_PLIST" 2>/dev/null || true
+            sleep 1
+            sudo launchctl load "$_PLIST"
+            sleep 3
+            if pgrep -x cloudflared &>/dev/null; then
+                ok "cloudflared service restarted"
+            else
+                err "Service did not start. Check: cat /var/log/cloudflared/cloudflared.err"
+            fi
+        else
+            err "No service found at $_PLIST"
+            err "Run the full installer first: sudo ./home_linux_mac.sh --sudo"
+        fi
+    else
+        if systemctl is-enabled cloudflared &>/dev/null 2>&1; then
+            sudo systemctl restart cloudflared
+            sleep 3
+            if systemctl is-active --quiet cloudflared 2>/dev/null; then
+                ok "cloudflared service restarted"
+            else
+                err "Service did not start. Check: sudo systemctl status cloudflared"
+            fi
+        else
+            err "No cloudflared service found."
+            err "Run the full installer first: sudo ./home_linux_mac.sh --sudo"
+        fi
+    fi
+    exit 0
+fi
 
 # ── Auto-read config from bootstrap output if flags not provided ──
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -83,40 +112,70 @@ _CFG_FILE=""
 # Check relative to repo root (running from repo root)
 [[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../erebus-temp/keys/portal_config.json" ]] && \
     _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/erebus-temp/keys/portal_config.json"
+# Check keys/ inside repo (legacy location)
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/keys/portal_config.json"
+
+_json_val() {
+    local key="$1"; local val=""
+    val=$(python3 -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$key',''); print(v if v else '')" 2>/dev/null) \
+        || val=$(python -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$key',''); print(v if v else '')" 2>/dev/null) \
+        || val=$(grep "\"$key\"" "$_CFG_FILE" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/' | head -1) \
+        || true
+    echo "$val"
+}
 
 if [[ -n "$_CFG_FILE" ]]; then
-    _json_val() { python3 -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$1',''); print(v if v else '')" 2>/dev/null; }
-    [[ -z "$TOKEN" ]]    && TOKEN=$(_json_val tunnel_token)
+    [[ -z "$TOKEN" ]]      && TOKEN=$(_json_val tunnel_token)
     [[ -z "$SSH_CA_KEY" ]] && SSH_CA_KEY=$(_json_val ssh_ca_public_key)
-    [[ -z "$SSH_HOST" ]]  && SSH_HOST=$(_json_val ssh_host)
+    [[ -z "$SSH_HOST" ]]   && SSH_HOST=$(_json_val ssh_host)
     if [[ -n "$TOKEN" ]]; then
         echo ""
         echo "  Auto-loaded config from: $_CFG_FILE"
     fi
 fi
 
+# ── Interactive prompt for token if still missing ────────────────
+if [[ -z "$TOKEN" ]]; then
+    if [[ -t 0 ]]; then
+        echo ""
+        echo "  ┌─────────────────────────────────────────────────────────┐"
+        echo "  │  Tunnel token not found -- let's set it up.             │"
+        echo "  └─────────────────────────────────────────────────────────┘"
+        echo ""
+        echo "  Your tunnel token is a long base64 string (starts with 'eyJ...')."
+        echo ""
+        echo "  Where to find it:"
+        echo "    1. If you ran bootstrap, it printed the token at the end."
+        echo "       It also saved it to: ../erebus-temp/keys/portal_config.json"
+        echo ""
+        echo "    2. In the Cloudflare Zero Trust dashboard:"
+        echo "       one.dash.cloudflare.com -> Networks -> Tunnels"
+        echo "       Click your tunnel -> Configure -> copy the token"
+        echo ""
+        echo "    3. If someone else set this up for you, ask them for"
+        echo "       the tunnel token from their bootstrap output."
+        echo ""
+        read -rp "  Paste your tunnel token here: " TOKEN
+        echo ""
+    fi
+fi
+
 if [[ -z "$TOKEN" ]]; then
     echo ""
-    echo "Usage: ./home_linux_mac.sh [--sudo] [--token <TOKEN>] [--ca-key <KEY>] [--ssh-host <HOST>]"
+    echo "  Could not determine tunnel token."
     echo ""
-    echo "If you ran bootstrap.sh from this repo, just run:"
-    echo "  ./installers/home_linux_mac.sh"
+    echo "  If you ran bootstrap on this machine, re-run from the repo"
+    echo "  directory so the script can find the config automatically."
     echo ""
-    echo "It auto-reads the token, SSH CA key, and host from ../erebus-temp/."
-    echo "Use --help for all options."
+    echo "  Otherwise, pass it directly:"
+    echo "    $0 --token <YOUR_TOKEN>"
+    echo ""
+    echo "  Use --help for all options."
     exit 1
 fi
 
-G='\033[0;32m'; Y='\033[1;33m'; R='\033[0;31m'; C='\033[0;36m'; B='\033[1m'; D='\033[2m'; X='\033[0m'
-ok()   { echo -e "${G}[OK]${X}   $*"; }
-info() { echo -e "${Y}[..]${X}   $*"; }
-err()  { echo -e "${R}[!!]${X}   $*" >&2; }
-
-IS_MAC=false; [[ "$(uname -s)" == "Darwin" ]] && IS_MAC=true
-
 # ── Determine sudo mode ─────────────────────────────────────────
-# Default: no-sudo (safe). Upgrade to sudo if explicitly requested or if
-# already running as root (e.g. user did `sudo ./home_linux_mac.sh`).
 USE_SUDO=false
 
 if $FORCE_NO_SUDO; then
@@ -124,22 +183,21 @@ if $FORCE_NO_SUDO; then
 elif $FORCE_SUDO; then
     USE_SUDO=true
 elif [[ $EUID -eq 0 ]]; then
-    # Already running as root — they chose sudo, honour it
     USE_SUDO=true
 elif [[ -t 0 ]]; then
-    # Interactive terminal, not root — explain the choice
     echo ""
     echo -e "  ${B}Choose setup mode:${X}"
     echo ""
-    echo -e "  ${C}[1]${X} Quick start ${D}(default, no sudo needed)${X}"
+    echo -e "  ${C}[1]${X} Quick start ${D}(no sudo needed)${X}"
     echo -e "      Installs cloudflared to ~/.local/bin/"
     echo -e "      Runs tunnel in foreground (stops when terminal closes)"
     echo -e "      SSH CA trust: prints commands for you to run manually"
     echo ""
-    echo -e "  ${C}[2]${X} Full system setup ${D}(requires sudo password)${X}"
-    echo -e "      Installs cloudflared system-wide (/usr/local/bin/)"
-    echo -e "      Registers as a service (auto-starts on boot)"
-    echo -e "      Configures SSH CA trust in /etc/ssh/ automatically"
+    echo -e "  ${C}[2]${X} Install as boot service ${D}(recommended, requires sudo)${X}"
+    echo -e "      Installs cloudflared system-wide"
+    echo -e "      Starts on boot automatically -- survives reboots"
+    echo -e "      Starts the tunnel immediately after install"
+    echo -e "      Configures SSH CA trust automatically"
     echo -e "      Enables SSH server if not running"
     echo ""
     echo -ne "  ${B}Choice [1/2]:${X} "
@@ -155,9 +213,12 @@ echo "  ================================================"
 echo "    erebus-edge -- Home Machine Setup (Linux/Mac)"
 echo "  ================================================"
 if $USE_SUDO; then
-    echo -e "    Mode: ${C}Full system setup${X} (sudo)"
+    echo -e "    Mode: ${C}Boot service${X} (sudo)"
 else
     echo -e "    Mode: ${C}Quick start${X} (no sudo)"
+fi
+if [[ -n "$SSH_HOST" ]]; then
+    echo "    SSH host: $SSH_HOST"
 fi
 echo ""
 
@@ -207,7 +268,6 @@ else
     esac
 
     if ! $USE_SUDO; then
-        # User-local install to ~/.local/bin/
         mkdir -p "$_USER_BIN"
         if $IS_MAC; then
             curl -fsSL "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-darwin-${CF_ARCH}.tgz" -o /tmp/cf.tgz
@@ -316,9 +376,10 @@ if ! $USE_SUDO; then
     fi
     info "Tunnel runs in foreground. Press Ctrl+C to stop."
     info "To run in background:  nohup cloudflared tunnel run --token <TOKEN> &"
+    info ""
+    info "Want it to survive reboots? Re-run with --sudo to install as a service."
     echo ""
     cloudflared tunnel run --token "$TOKEN"
-    # If we get here, cloudflared exited
     info "cloudflared tunnel stopped."
     exit 0
 fi
@@ -326,15 +387,26 @@ fi
 # ── sudo mode: install as system service ──────────────────────────
 info "Installing cloudflared tunnel service..."
 
+# Stop any existing service/process first
+if pgrep -x cloudflared &>/dev/null; then
+    info "Stopping existing cloudflared..."
+    if $IS_MAC; then
+        sudo launchctl unload /Library/LaunchDaemons/com.cloudflare.cloudflared.plist 2>/dev/null || true
+    else
+        sudo systemctl stop cloudflared 2>/dev/null || true
+    fi
+    sleep 2
+    # Force kill if still running
+    if pgrep -x cloudflared &>/dev/null; then
+        sudo pkill -x cloudflared 2>/dev/null || true
+        sleep 1
+    fi
+fi
+
 if $IS_MAC; then
-    # macOS: `cloudflared service install` doesn't accept a token argument.
-    # Create a LaunchDaemon plist manually that runs the tunnel with the token.
     _PLIST="/Library/LaunchDaemons/com.cloudflare.cloudflared.plist"
     _LOG_DIR="/var/log/cloudflared"
     sudo mkdir -p "$_LOG_DIR"
-
-    # Unload existing if present
-    sudo launchctl unload "$_PLIST" 2>/dev/null || true
 
     sudo tee "$_PLIST" >/dev/null <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -364,21 +436,17 @@ if $IS_MAC; then
 PLIST
 
     sudo launchctl load "$_PLIST"
-    ok "Tunnel service installed (LaunchDaemon)"
+    ok "Service installed (starts on boot + started now)"
     ok "Logs: $_LOG_DIR/cloudflared.log"
 else
-    # Linux: cloudflared service install accepts a token
     if sudo cloudflared service install "$TOKEN" 2>/dev/null; then
-        ok "Tunnel service installed and started"
+        ok "Service installed (starts on boot + started now)"
     else
-        if pgrep -x cloudflared &>/dev/null; then
-            info "Reinstalling with current token..."
-            sudo cloudflared service uninstall 2>/dev/null || true
-            sudo cloudflared service install "$TOKEN"
-            ok "Service reinstalled"
-        else
-            err "Service install failed"
-        fi
+        info "Reinstalling with current token..."
+        sudo cloudflared service uninstall 2>/dev/null || true
+        sleep 1
+        sudo cloudflared service install "$TOKEN"
+        ok "Service reinstalled"
     fi
 fi
 
@@ -386,10 +454,8 @@ fi
 info "Waiting for tunnel to connect..."
 sleep 5
 
-# Check if the process is running AND actually connected (not crash-looping)
 _tunnel_ok=false
 if pgrep -x cloudflared &>/dev/null; then
-    # Process is alive — check if it's actually working, not just restarting
     if $IS_MAC && [[ -f "/var/log/cloudflared/cloudflared.err" ]]; then
         _last_err=$(tail -3 /var/log/cloudflared/cloudflared.err 2>/dev/null)
         if echo "$_last_err" | grep -qi "not valid\|error\|failed"; then
@@ -397,23 +463,17 @@ if pgrep -x cloudflared &>/dev/null; then
             echo "$_last_err" | sed 's/^/    /'
             echo ""
             err "This usually means the tunnel token is invalid or truncated."
-            err "Re-run: ./installers/home_linux_mac.sh --sudo"
+            err "Re-run: sudo ./installers/home_linux_mac.sh --sudo"
         else
             _tunnel_ok=true
         fi
     elif $IS_MAC && [[ -f "/var/log/cloudflared/cloudflared.log" ]]; then
-        if tail -5 /var/log/cloudflared/cloudflared.log 2>/dev/null | grep -qi "Registered tunnel connection"; then
-            _tunnel_ok=true
-        else
-            # Process alive but no registered connections yet — may still be starting
-            _tunnel_ok=true
-        fi
+        _tunnel_ok=true
     else
         _tunnel_ok=true
     fi
 else
     if $IS_MAC; then
-        # Check if it started and immediately crashed
         if [[ -f "/var/log/cloudflared/cloudflared.err" ]]; then
             _last_err=$(tail -3 /var/log/cloudflared/cloudflared.err 2>/dev/null)
             err "cloudflared is not running. Last error:"
@@ -436,11 +496,23 @@ if $_tunnel_ok; then
     echo -e "    ${G}${B}Done!  Home machine is ready.${X}"
     echo "  ================================================"
     echo ""
-    echo "  Now run the WORK machine installer on the machine"
-    echo "  you connect FROM."
     if [[ -n "$SSH_HOST" ]]; then
-        echo "    Browser : https://$SSH_HOST"
+        echo "  Your SSH endpoint: $SSH_HOST"
+        echo ""
+        echo "  Connect from your work machine:"
+        echo "    Browser : https://$SSH_HOST  (email OTP login)"
         echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+    fi
+    echo ""
+    echo "  Service management:"
+    if $IS_MAC; then
+        echo "    Restart : sudo ./installers/home_linux_mac.sh --restart"
+        echo "    Logs    : cat /var/log/cloudflared/cloudflared.log"
+        echo "    Stop    : sudo launchctl unload /Library/LaunchDaemons/com.cloudflare.cloudflared.plist"
+    else
+        echo "    Restart : sudo ./installers/home_linux_mac.sh --restart"
+        echo "    Logs    : sudo journalctl -u cloudflared -f"
+        echo "    Stop    : sudo systemctl stop cloudflared"
     fi
     echo ""
 fi
