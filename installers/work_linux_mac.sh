@@ -5,28 +5,112 @@
 #  No admin/sudo required.
 #
 #  Usage:
-#    chmod +x work_linux_mac.sh && ./work_linux_mac.sh --ssh-host <HOST>
+#    ./work_linux_mac.sh                          (auto-reads from ../erebus-temp/)
+#    ./work_linux_mac.sh --ssh-host <HOST>         (skip prompt)
 #
-#  bootstrap.py prints the exact command with your host.
+#  If bootstrap was run on this machine, just run with no arguments.
 # ═══════════════════════════════════════════════════════════════════
 set -euo pipefail
 
 # ── Parse arguments ──────────────────────────────────────────────
 SSH_HOST=""
 
+show_help() {
+    cat <<'HELP'
+Usage:
+  ./work_linux_mac.sh                          (auto-reads from ../erebus-temp/)
+  ./work_linux_mac.sh --ssh-host <HOST>
+
+Options:
+  --ssh-host <HOST>     Your SSH hostname (e.g. ssh.you.workers.dev)
+  --help, -h            Show this help
+
+If you ran bootstrap.sh from this repo, just run with no arguments.
+The script auto-reads your SSH host from ../erebus-temp/keys/portal_config.json.
+HELP
+    exit 0
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --ssh-host) SSH_HOST="$2"; shift 2 ;;
-        *) echo "Unknown argument: $1"; exit 1 ;;
+        -ssh-host|--ssh-host) SSH_HOST="$2"; shift 2 ;;
+        -help|--help|-h)      show_help ;;
+        *) echo "Unknown argument: $1 (try --help)"; exit 1 ;;
     esac
 done
 
+# ── Auto-read config from bootstrap output if not provided ───────
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_CFG_FILE=""
+# Check relative to installers/ dir (running from repo)
+[[ -f "$_SCRIPT_DIR/../erebus-temp/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/erebus-temp/keys/portal_config.json"
+# Check relative to repo root (running from repo root)
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../erebus-temp/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/erebus-temp/keys/portal_config.json"
+# Check keys/ inside repo (legacy location)
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/keys/portal_config.json"
+
+_json_val() {
+    local key="$1"
+    local val=""
+    # Try python3, then python, then grep+sed
+    val=$(python3 -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$key',''); print(v if v else '')" 2>/dev/null) \
+        || val=$(python -c "import json; d=json.load(open('$_CFG_FILE')); v=d.get('$key',''); print(v if v else '')" 2>/dev/null) \
+        || val=$(grep "\"$key\"" "$_CFG_FILE" 2>/dev/null | sed 's/.*: *"\([^"]*\)".*/\1/' | head -1) \
+        || true
+    echo "$val"
+}
+
+if [[ -n "$_CFG_FILE" && -z "$SSH_HOST" ]]; then
+    SSH_HOST=$(_json_val ssh_host)
+    if [[ -n "$SSH_HOST" ]]; then
+        echo ""
+        echo "  Auto-loaded config from: $_CFG_FILE"
+    fi
+fi
+
+# ── Interactive prompt if still missing ──────────────────────────
 if [[ -z "$SSH_HOST" ]]; then
-    echo "Usage: $0 --ssh-host <HOST>"
+    if [[ -t 0 ]]; then
+        echo ""
+        echo "  ┌─────────────────────────────────────────────────────────┐"
+        echo "  │  SSH host not found -- let's set it up.                 │"
+        echo "  └─────────────────────────────────────────────────────────┘"
+        echo ""
+        echo "  Your SSH host looks like:  ssh.<yourname>.workers.dev"
+        echo ""
+        echo "  Where to find it:"
+        echo "    1. If you ran bootstrap, it printed your endpoints at the end."
+        echo "       Look for the line:  Browser SSH : https://ssh.XXXX.workers.dev"
+        echo ""
+        echo "    2. If someone else set this up for you, ask them for the SSH"
+        echo "       host -- they'll have it from their bootstrap output."
+        echo ""
+        echo "    3. If you ran the home/server installer, it showed your SSH"
+        echo "       host in the banner at the top and the summary at the end."
+        echo ""
+        echo "    4. You can also find it in the Cloudflare dashboard:"
+        echo "       dash.cloudflare.com -> Workers & Pages -> look for 'ssh-proxy'"
+        echo "       The URL will be listed as: ssh.<yourname>.workers.dev"
+        echo ""
+        read -rp "  Paste your SSH host here: " SSH_HOST
+        echo ""
+    fi
+fi
+
+if [[ -z "$SSH_HOST" ]]; then
     echo ""
-    echo "Example: $0 --ssh-host ssh.myname.workers.dev"
+    echo "  Could not determine SSH host."
     echo ""
-    echo "Run 'python src/bootstrap.py' first -- it prints the exact command."
+    echo "  If you ran bootstrap on this machine, re-run from the repo"
+    echo "  directory so the script can find the config automatically."
+    echo ""
+    echo "  Otherwise, pass it directly:"
+    echo "    $0 --ssh-host ssh.yourname.workers.dev"
+    echo ""
+    echo "  Use --help for all options."
     exit 1
 fi
 
@@ -40,6 +124,7 @@ echo ""
 echo "  ================================================"
 echo "    erebus-edge -- Work Machine Setup (Linux/Mac)"
 echo "  ================================================"
+echo "    SSH host: $SSH_HOST"
 echo ""
 
 mkdir -p "$INSTALL_DIR"
