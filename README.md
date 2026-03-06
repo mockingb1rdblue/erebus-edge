@@ -6,7 +6,7 @@ No admin, no VPN, no IT ticket.
 ```
 Work machine (no admin, corporate proxy)
   |
-  |--> Browser --> ssh.SUB.workers.dev --> CF Access (email OTP)
+  |--> Browser --> ssh.yourdomain.com --> CF Access (email OTP)
   |     --> CF browser-rendered SSH terminal
   |     --> Short-lived SSH certificates (no static keys)
   |
@@ -16,9 +16,10 @@ Work machine (no admin, corporate proxy)
         --> any Tailscale peer via DERP relay
 ```
 
-**Why it works on corporate networks:** `*.workers.dev` is on the `no_proxy`
-list of most managed Windows machines. Traffic goes direct to Cloudflare's
-edge without hitting the corporate proxy or SSL inspection.
+**How it works:** Cloudflare Tunnel creates a persistent connection from your home
+machine to CF's edge. A DNS CNAME (`ssh.yourdomain.com`) routes traffic through
+CF Access (email OTP authentication) to the tunnel, which forwards to your local
+SSH server. No port forwarding, no dynamic DNS, no static IP needed.
 
 Every user deploys their **own** instance to their **own** Cloudflare account.
 Share the repo/zip -- not the URL.
@@ -27,12 +28,17 @@ Share the repo/zip -- not the URL.
 
 ## Prerequisites
 
-You need a **free** [Cloudflare account](https://dash.cloudflare.com/sign-up).
-That's it. No paid plan, no domain name, no credit card required for basic setup.
+1. A **free** [Cloudflare account](https://dash.cloudflare.com/sign-up)
+2. A **domain on Cloudflare** -- either:
+   - Buy one through [CF Registrar](https://dash.cloudflare.com/?to=/:account/domains/register) (~$1/yr for .xyz)
+   - Or add your own domain and point its nameservers to Cloudflare
+
+That's it. No paid plan, no credit card required for basic setup.
 
 The bootstrap wizard walks you through everything, including:
 - Creating a CF API token (opens the dashboard with step-by-step instructions)
 - Enabling Zero Trust (free plan, $0 charge)
+- Setting up DNS, tunnel, and access policies
 
 **Optional:** A [Tailscale account](https://login.tailscale.com/start) if you
 want peer-to-peer connectivity (Option C below). Not needed for SSH.
@@ -58,14 +64,15 @@ The wizard will:
 1. Open your browser to the CF Dashboard to create an API token
 2. Print step-by-step instructions (which buttons to click, which permissions)
 3. If Zero Trust isn't enabled, walk you through the free enrollment
-4. Create everything automatically once you paste the token
+4. Pick your domain (or guide you to register one)
+5. Create everything automatically once you paste the token
 
-Opens your browser to create a Cloudflare API token, then automatically:
+Automatically sets up:
 
 - Creates a scoped API token + CF Tunnel
-- Deploys the SSH proxy Worker (`ssh.SUB.workers.dev`)
-- Deploys the Tailscale relay Worker (`ts-relay.SUB.workers.dev`)
+- Creates DNS CNAME (`ssh.yourdomain.com` -> tunnel)
 - Sets up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
+- Deploys the Tailscale relay Worker (`ts-relay.SUB.workers.dev`)
 - Optionally builds a `tsnet` binary (userspace Tailscale)
 
 All artifacts go to `../erebus-temp/` -- the repo stays clean.
@@ -76,13 +83,13 @@ All artifacts go to `../erebus-temp/` -- the repo stays clean.
 | Flag | Purpose |
 |------|---------|
 | `--email EMAIL` | Email(s) to allow through CF Access (repeatable) |
+| `--domain DOMAIN` | Domain to use (auto-selects if omitted) |
 | `--cf-token TOKEN` | Pass CF API token directly (skip browser flow) |
 | `--save-token` | Save token to Keychain/DPAPI/file |
-| `--redeploy` | Re-deploy Workers with existing config |
+| `--redeploy` | Re-run DNS + ingress + Access with existing config |
 | `--build-tsnet` | Only rebuild tsnet binary |
 | `--skip-tsnet` | Skip Go download + tsnet build |
 | `--skip-access` | Skip CF Zero Trust Access setup |
-| `--workers-only` | Skip tunnel/Access, just deploy Workers |
 
 </details>
 
@@ -91,10 +98,10 @@ All artifacts go to `../erebus-temp/` -- the repo stays clean.
 If you ran bootstrap on the same machine, just run:
 
 ```bash
-# macOS / Linux — auto-reads token from ../erebus-temp/
+# macOS / Linux -- auto-reads token from ../erebus-temp/
 ./installers/home_linux_mac.sh
 
-# Windows — auto-reads token from ..\erebus-temp\
+# Windows -- auto-reads token from ..\erebus-temp\
 installers\home_windows.bat
 ```
 
@@ -102,18 +109,20 @@ If your home machine is a **different box**, copy the repo there (or just
 `installers/` + `../erebus-temp/`) and run the same command.
 
 The script asks whether you want **Quick start** (no sudo, foreground tunnel)
-or **Full system setup** (sudo/admin, auto-starts on boot). Pass `--sudo` /
+or **Boot service** (sudo/admin, auto-starts on boot). Pass `--sudo` /
 `--no-sudo` (or `--admin` / `--no-admin` on Windows) to skip the prompt.
 
 ### 3. Set up your work machine
 
 ```bash
-# macOS / Linux
-./installers/work_linux_mac.sh --ssh-host <HOST>
+# macOS / Linux -- auto-reads SSH host from config
+./installers/work_linux_mac.sh
 
-# Windows (no admin needed)
-installers\work_windows.bat <HOST>
+# Windows (no admin needed) -- auto-reads from config
+installers\work_windows.bat
 ```
+
+Or pass the host directly: `--ssh-host ssh.yourdomain.com`
 
 Windows `.bat` files work even when GPO blocks PowerShell.
 No secrets in the installer files -- tokens are passed as arguments at run time.
@@ -124,11 +133,14 @@ No secrets in the installer files -- tokens are passed as arguments at run time.
 
 ### Option A -- Browser SSH (CF Access)
 
-Visit `https://ssh.SUB.workers.dev` in your browser.
+Visit `https://ssh.yourdomain.com` in your browser.
 
 1. Authenticate via email OTP
 2. Browser-rendered SSH terminal opens automatically
 3. CF generates a short-lived certificate for your session -- no SSH keys needed
+
+You can also use the App Launcher at `https://TEAM.cloudflareaccess.com` to
+see all your CF Access apps and launch SSH from there.
 
 ### Option B -- CLI SSH (CF Tunnel)
 
@@ -137,7 +149,8 @@ src/connect.sh      # Git Bash / Mac / Linux
 src\connect.bat     # Windows cmd
 ```
 
-First run asks for your home username and SSH port, saves to `cf_config.txt`.
+Or directly: `ssh YOUR_USER@ssh.yourdomain.com`
+(requires cloudflared installed -- the work installer handles this)
 
 ### Option C -- Tailscale (tsnet)
 
@@ -182,7 +195,7 @@ tsnet/                      Go source for userspace Tailscale (optional)
 
 ../erebus-temp/             Created by bootstrap (gitignored, outside repo)
   keys/
-    portal_config.json        Account IDs, subdomain, tunnel ID, etc.
+    portal_config.json        Account IDs, domain, tunnel ID, etc.
   bin/
     cloudflared               Downloaded if not in PATH
     tsnet                     Built from source (optional)
@@ -199,7 +212,8 @@ tsnet/                      Go source for userspace Tailscale (optional)
 - **Per-platform credential storage** -- macOS Keychain, Linux file (0600), Windows DPAPI
 - **No admin required** -- everything runs in userspace on the work machine
 - **No secrets in repo** -- all artifacts go to `../erebus-temp/` (outside the repo)
-- **Scoped API tokens** -- bootstrap creates tokens with only the 4 required permissions
+- **Scoped API tokens** -- bootstrap creates tokens with only the required permissions
+- **DNS-routed via CF proxy** -- traffic goes through CF's edge, never exposes your home IP
 
 ---
 

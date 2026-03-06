@@ -8,8 +8,8 @@ REM  No admin needed. Downloads cloudflared to your user directory.
 REM
 REM  Usage:
 REM    work_windows.bat                              (auto-reads config)
-REM    work_windows.bat --ssh-host ssh.you.workers.dev   (skip prompt)
-REM    work_windows.bat ssh.you.workers.dev              (positional)
+REM    work_windows.bat --ssh-host ssh.yourdomain.com   (skip prompt)
+REM    work_windows.bat ssh.yourdomain.com              (positional)
 REM
 REM  If bootstrap was run on this machine, just double-click -- no args needed.
 REM ═══════════════════════════════════════════════════════════════════
@@ -37,7 +37,7 @@ echo     work_windows.bat --ssh-host ^<HOST^>                (skip prompt)
 echo     work_windows.bat ^<HOST^>                           (positional)
 echo.
 echo   Options:
-echo     --ssh-host ^<HOST^>    Your SSH hostname (e.g. ssh.you.workers.dev)
+echo     --ssh-host ^<HOST^>    Your SSH hostname (e.g. ssh.yourdomain.com)
 echo     --help, -h           Show this help
 echo.
 echo   If you ran bootstrap on this machine, just double-click with no arguments.
@@ -82,11 +82,11 @@ if "%SSH_HOST%"=="" (
     echo   ^|  SSH host not found -- let's set it up.                   ^|
     echo   +-----------------------------------------------------------+
     echo.
-    echo   Your SSH host looks like:  ssh.^<yourname^>.workers.dev
+    echo   Your SSH host looks like:  ssh.yourdomain.com
     echo.
     echo   Where to find it:
     echo     1. If you ran bootstrap, it printed your endpoints at the end.
-    echo        Look for the line:  Browser SSH : https://ssh.XXXX.workers.dev
+    echo        Look for the line:  Browser SSH : https://ssh.XXXX.com
     echo.
     echo     2. If someone else set this up for you, ask them for the SSH
     echo        host -- they'll have it from their bootstrap output.
@@ -95,8 +95,8 @@ if "%SSH_HOST%"=="" (
     echo        host in the banner at the top and the summary at the end.
     echo.
     echo     4. You can also find it in the Cloudflare dashboard:
-    echo        dash.cloudflare.com -^> Workers ^& Pages -^> look for 'ssh-proxy'
-    echo        The URL will be listed as: ssh.^<yourname^>.workers.dev
+    echo        dash.cloudflare.com -^> DNS -^> look for a CNAME record named 'ssh'
+    echo        The full hostname is: ssh.yourdomain.com
     echo.
     set /p "SSH_HOST=  Paste your SSH host here: "
     echo.
@@ -110,7 +110,7 @@ if "%SSH_HOST%"=="" (
     echo   directory so the script can find the config automatically.
     echo.
     echo   Otherwise, pass it directly:
-    echo     work_windows.bat --ssh-host ssh.yourname.workers.dev
+    echo     work_windows.bat --ssh-host ssh.yourdomain.com
     echo.
     echo   Use --help for all options.
     echo.

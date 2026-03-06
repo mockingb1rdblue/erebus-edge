@@ -57,7 +57,7 @@ echo.
 echo   Options:
 echo     --token ^<TOKEN^>       Cloudflare Tunnel token (from bootstrap output)
 echo     --ca-key ^<KEY^>        SSH CA public key for short-lived certificates
-echo     --ssh-host ^<HOST^>     Your SSH hostname (e.g. ssh.you.workers.dev)
+echo     --ssh-host ^<HOST^>     Your SSH hostname (e.g. ssh.yourdomain.com)
 echo     --admin               Install as boot service (requires Run as Administrator)
 echo     --no-admin            Run in user mode (no admin rights needed)
 echo     --restart             Restart the existing cloudflared service
