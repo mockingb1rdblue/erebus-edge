@@ -32,7 +32,7 @@ Usage:
 Options:
   --token <TOKEN>       Cloudflare Tunnel token (from bootstrap output)
   --ca-key <KEY>        SSH CA public key for short-lived certificates
-  --ssh-host <HOST>     Your SSH hostname (e.g. ssh.you.workers.dev)
+  --ssh-host <HOST>     Your SSH hostname (e.g. ssh.yourdomain.com)
   --sudo                Install as system service (auto-starts on boot)
   --no-sudo             Run in user mode even if launched with sudo
   --restart             Restart the existing cloudflared service

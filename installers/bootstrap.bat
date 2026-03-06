@@ -11,7 +11,7 @@ setlocal EnableDelayedExpansion
 ::   bootstrap.bat --redeploy
 ::   bootstrap.bat --skip-access --skip-tsnet
 ::   bootstrap.bat --build-tsnet
-::   bootstrap.bat --workers-only
+::   bootstrap.bat --domain myname.xyz
 
 :: ═══════════════════════════════════════════════════════════════════════
 ::  Paths & constants
@@ -52,6 +52,8 @@ set "SSH_HOST="
 set "SSH_APP_AUD="
 set "SSH_CA_KEY="
 set "TEAM_NAME="
+set "ZONE_ID="
+set "DOMAIN="
 set "TSNET_OK=false"
 
 :: ── Parse arguments ──────────────────────────────────────────────────
@@ -59,7 +61,7 @@ set "ARG_REDEPLOY=false"
 set "ARG_SKIP_ACCESS=false"
 set "ARG_SKIP_TSNET=false"
 set "ARG_BUILD_TSNET=false"
-set "ARG_WORKERS_ONLY=false"
+set "ARG_DOMAIN="
 set "EMAIL_COUNT=0"
 
 :parse_args
@@ -68,7 +70,7 @@ if /i "%~1"=="--redeploy"     (set "ARG_REDEPLOY=true"     & shift & goto parse_
 if /i "%~1"=="--skip-access"  (set "ARG_SKIP_ACCESS=true"  & shift & goto parse_args)
 if /i "%~1"=="--skip-tsnet"   (set "ARG_SKIP_TSNET=true"   & shift & goto parse_args)
 if /i "%~1"=="--build-tsnet"  (set "ARG_BUILD_TSNET=true"  & shift & goto parse_args)
-if /i "%~1"=="--workers-only" (set "ARG_WORKERS_ONLY=true" & shift & goto parse_args)
+if /i "%~1"=="--domain" (shift & set "ARG_DOMAIN=%~1" & shift & goto parse_args)
 if /i "%~1"=="--email" (
     shift
     set /a EMAIL_COUNT+=1
@@ -86,11 +88,11 @@ echo Usage: %~nx0 [OPTIONS]
 echo.
 echo Options:
 echo   --email EMAIL     Email for CF Access policy (repeatable)
-echo   --redeploy        Re-deploy Workers with existing config
+echo   --domain DOMAIN   Domain to use for SSH (e.g. yourdomain.com)
+echo   --redeploy        Re-run DNS + ingress + Access with existing config
 echo   --skip-access     Skip CF Access setup
 echo   --skip-tsnet      Skip tsnet build step
 echo   --build-tsnet     Only rebuild tsnet binary
-echo   --workers-only    Skip tunnel/Access, just deploy Workers
 echo   -h, --help        Show this help
 exit /b 0
 
@@ -329,42 +331,38 @@ if "%ARG_REDEPLOY%"=="true" (
     call :config_val account_id ACCT_ID
     call :config_val subdomain SUBDOMAIN
     call :config_val tunnel_id TUNNEL_ID
-    call :config_val kv_ns_id KV_NS_ID
+    call :config_val domain DOMAIN
+    call :config_val zone_id ZONE_ID
+    call :config_val ssh_host SSH_HOST
     if "!ACCT_ID!"=="" (call :err "Config incomplete. Run full bootstrap first." & exit /b 1)
     if "!SUBDOMAIN!"=="" (call :err "Config incomplete. Run full bootstrap first." & exit /b 1)
     call :step_auth
-    call :step_workers
+    if not "!ARG_DOMAIN!"=="" set "DOMAIN=!ARG_DOMAIN!"
+    call :step_domain
+    call :step_ingress
     call :step_ts_relay
     if not "%ARG_SKIP_TSNET%"=="true" call :step_build_tsnet
+    call :step_save
     call :print_summary
     goto :end
 )
 
 :: ── Full wizard ──────────────────────────────────────────────────────
+if not "!ARG_DOMAIN!"=="" set "DOMAIN=!ARG_DOMAIN!"
+
 call :step_auth
 call :step_discover
-
-if not "%ARG_WORKERS_ONLY%"=="true" (
-    call :step_tunnel
-    call :step_kv
-) else (
-    call :config_val tunnel_id TUNNEL_ID
-    call :config_val kv_ns_id KV_NS_ID
-)
+call :step_tunnel
+call :step_domain
 
 :: Save config early
 call :step_save
 
-call :step_workers
-
-if not "%ARG_WORKERS_ONLY%"=="true" (
-    call :step_ingress
-    call :step_ts_relay
-)
+call :step_ingress
+call :step_ts_relay
 
 :: CF Access: collect emails
 if "%ARG_SKIP_ACCESS%"=="true" goto :skip_access
-if "%ARG_WORKERS_ONLY%"=="true" goto :skip_access
 if %EMAIL_COUNT% gtr 0 goto :do_access
 
 echo.
@@ -477,7 +475,7 @@ goto :save_token_prompt
 echo.
 echo   Dashboard -^> My Profile -^> API Tokens -^> Create Token
 echo   Permissions: Cloudflare Tunnel Edit, Workers Script Edit,
-echo                Workers KV Storage Edit, Zero Trust Edit
+echo                Zero Trust Edit, Zone DNS Edit
 echo.
 set /p "TOKEN=  Paste token: "
 if "!TOKEN!"=="" (call :err "No token provided." & exit /b 1)
@@ -543,7 +541,6 @@ for /f "tokens=1,* delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Byp
     if "%%a"=="SUBDOMAIN" set "SUBDOMAIN=%%b"
 )
 del "%_disc_ps%" 2>nul
-set "SSH_HOST=ssh.!SUBDOMAIN!.workers.dev"
 call :ok "workers.dev subdomain: !SUBDOMAIN!.workers.dev"
 call :ok "Account: !ACCT_NAME!"
 goto :eof
@@ -592,75 +589,108 @@ call :ok "Tunnel: !TUNNEL_ID:~0,8!..."
 goto :eof
 
 :: ═══════════════════════════════════════════════════════════════════════
-::  Step 4 — KV namespace
+::  Step 4 — Domain & DNS
 :: ═══════════════════════════════════════════════════════════════════════
-:step_kv
-call :hdr "Step 4: KV Namespace (ssh-portal)"
+:step_domain
+call :hdr "Step 4: Domain & DNS"
 
-set "_kv_ps=%TEMP%\erebus_kv_%RANDOM%.ps1"
+if not "!DOMAIN!"=="" (
+    call :ok "Using domain: !DOMAIN!"
+) else (
+    call :config_val domain DOMAIN
+    if not "!DOMAIN!"=="" call :ok "Domain from config: !DOMAIN!"
+)
+
+set "_dom_ps=%TEMP%\erebus_domain_%RANDOM%.ps1"
 (
 echo [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 echo [System.Net.ServicePointManager]::ServerCertificateValidationCallback = {$true}
 echo $h = @{ 'Authorization' = "Bearer %TOKEN%"; 'Content-Type' = 'application/json' }
-echo $r = Invoke-RestMethod -Uri '%CF_API%/accounts/%ACCT_ID%/storage/kv/namespaces' -Headers $h -ErrorAction Stop
-echo $ns = $r.result ^| Where-Object { $_.title -eq 'ssh-portal' } ^| Select-Object -First 1
-echo if ($ns^) { Write-Output $ns.id; exit 0 }
-echo $cr = Invoke-RestMethod -Uri '%CF_API%/accounts/%ACCT_ID%/storage/kv/namespaces' -Method POST -Headers $h -Body '{"title":"ssh-portal"}' -ErrorAction Stop
-echo Write-Output $cr.result.id
-) > "%_kv_ps%"
-for /f "delims=" %%v in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%_kv_ps%" 2^>nul') do set "KV_NS_ID=%%v"
-del "%_kv_ps%" 2>nul
-if "!KV_NS_ID!"=="" (call :err "Failed to create/find KV namespace." & exit /b 1)
-call :ok "KV namespace: !KV_NS_ID:~0,8!..."
-goto :eof
-
-:: ═══════════════════════════════════════════════════════════════════════
-::  Step 5 — Deploy SSH Worker
-:: ═══════════════════════════════════════════════════════════════════════
-:step_workers
-call :hdr "Step 5: Deploy SSH Worker"
-set "SSH_HOST=ssh.!SUBDOMAIN!.workers.dev"
-
-:: Generate Worker JS to temp file
-set "_ssh_js=%TEMP%\erebus_ssh_worker_%RANDOM%.js"
-(
-echo // SSH proxy Worker: forwards cloudflared SSH traffic to the CF Tunnel.
-echo const TUNNEL   = '!TUNNEL_ID!.cfargotunnel.com';
-echo const SSH_HOST = '!SSH_HOST!';
-echo export default {
-echo   async fetch(request^) {
-echo     const url  = new URL(request.url^);
-echo     const dest = new URL(url.pathname + url.search, `https://${TUNNEL}`^);
-echo     const headers = new Headers(^);
-echo     for (const [k, v] of request.headers^) {
-echo       if (/^^(cf-^|x-forwarded-^|x-real-ip^)/i.test(k^)^) continue;
-echo       headers.set(k, v^);
-echo     }
-echo     headers.set('Host', SSH_HOST^);
-echo     return fetch(dest.toString(^), {
-echo       method: request.method, headers,
-echo       body: ['GET','HEAD'].includes(request.method^) ? undefined : request.body,
-echo     }^);
+echo $r = Invoke-RestMethod -Uri '%CF_API%/zones?account.id=%ACCT_ID%^&status=active^&per_page=50' -Headers $h -ErrorAction Stop
+echo $zones = $r.result
+echo if (-not $zones -or $zones.Count -eq 0^) {
+echo   Write-Output 'ERROR=No domains found on this Cloudflare account.'
+echo   exit 0
+echo }
+echo $domain = '%DOMAIN%'
+echo if (-not $domain^) {
+echo   if ($zones.Count -eq 1^) {
+echo     $domain = $zones[0].name
+echo     $zoneId = $zones[0].id
+echo   } else {
+echo     Write-Host ''
+echo     Write-Host '  Select a domain for SSH access:'
+echo     for ($i=0; $i -lt $zones.Count; $i++^) { Write-Host ('  ' + ($i+1^) + '  ' + $zones[$i].name^) }
+echo     Write-Host ''
+echo     $choice = Read-Host '  Domain [1]'
+echo     if (-not $choice^) { $choice = '1' }
+echo     $idx = [int]$choice - 1
+echo     $domain = $zones[$idx].name
+echo     $zoneId = $zones[$idx].id
 echo   }
-echo };
-) > "!_ssh_js!"
-
-echo   Deploying 'ssh' Worker ...
-call :deploy_worker "!ACCT_ID!" "ssh" "!_ssh_js!"
-if not errorlevel 1 (
-    echo   %G%OK%X%  -^>  https://!SSH_HOST!
-) else (
-    echo   %R%FAILED%X%
+echo }
+echo if (-not $zoneId^) {
+echo   $z = $zones ^| Where-Object { $_.name -eq $domain } ^| Select-Object -First 1
+echo   if ($z^) { $zoneId = $z.id } else { Write-Output "ERROR=Could not find zone for domain $domain"; exit 0 }
+echo }
+echo $sshHost = "ssh.$domain"
+echo :: Create or update DNS CNAME
+echo $cnameTarget = '%TUNNEL_ID%.cfargotunnel.com'
+echo $dnsR = Invoke-RestMethod -Uri ('%CF_API%/zones/' + $zoneId + '/dns_records?type=CNAME^&name=' + $sshHost^) -Headers $h -ErrorAction SilentlyContinue
+echo $existing = $dnsR.result ^| Where-Object { $_.name -eq $sshHost } ^| Select-Object -First 1
+echo if ($existing^) {
+echo   $body = @{ type='CNAME'; name='ssh'; content=$cnameTarget; proxied=$true } ^| ConvertTo-Json
+echo   Invoke-RestMethod -Uri ('%CF_API%/zones/' + $zoneId + '/dns_records/' + $existing.id^) -Method PUT -Headers $h -Body $body -ErrorAction SilentlyContinue ^| Out-Null
+echo   Write-Output "DNS_UPDATED=1"
+echo } else {
+echo   $body = @{ type='CNAME'; name='ssh'; content=$cnameTarget; proxied=$true } ^| ConvertTo-Json
+echo   $cr = Invoke-RestMethod -Uri ('%CF_API%/zones/' + $zoneId + '/dns_records'^) -Method POST -Headers $h -Body $body -ErrorAction SilentlyContinue
+echo   if ($cr.success^) { Write-Output "DNS_CREATED=1" } else { Write-Output "DNS_FAILED=1" }
+echo }
+echo Write-Output ("DOMAIN=" + $domain^)
+echo Write-Output ("ZONE_ID=" + $zoneId^)
+echo Write-Output ("SSH_HOST=" + $sshHost^)
+) > "%_dom_ps%"
+set "_dns_updated="
+set "_dns_created="
+set "_dns_failed="
+set "_dom_error="
+for /f "tokens=1,* delims==" %%a in ('powershell -NoProfile -ExecutionPolicy Bypass -File "%_dom_ps%" 2^>nul') do (
+    if "%%a"=="DOMAIN" set "DOMAIN=%%b"
+    if "%%a"=="ZONE_ID" set "ZONE_ID=%%b"
+    if "%%a"=="SSH_HOST" set "SSH_HOST=%%b"
+    if "%%a"=="DNS_UPDATED" set "_dns_updated=1"
+    if "%%a"=="DNS_CREATED" set "_dns_created=1"
+    if "%%a"=="DNS_FAILED" set "_dns_failed=1"
+    if "%%a"=="ERROR" set "_dom_error=%%b"
 )
-del "!_ssh_js!" 2>nul
+del "%_dom_ps%" 2>nul
+
+if defined _dom_error (
+    call :err "!_dom_error!"
+    echo.
+    echo   You need a domain on Cloudflare to route SSH traffic.
+    echo   Buy one at: https://dash.cloudflare.com/?to=/:account/domains/register
+    echo   Or add your own: https://dash.cloudflare.com/?to=/:account/add-site
+    echo   Then re-run this bootstrap.
+    exit /b 1
+)
+
+call :ok "SSH hostname: !SSH_HOST!"
+set "_cname_target=!TUNNEL_ID!.cfargotunnel.com"
+if defined _dns_updated call :ok "DNS CNAME updated: !SSH_HOST! -> !_cname_target! (proxied)"
+if defined _dns_created call :ok "DNS CNAME created: !SSH_HOST! -> !_cname_target! (proxied)"
+if defined _dns_failed (
+    call :warn "DNS record creation failed."
+    call :warn "Create manually: CNAME  ssh  ->  !_cname_target!  (proxied/orange cloud)"
+)
 goto :eof
 
 :: ═══════════════════════════════════════════════════════════════════════
-::  Step 6 — Tunnel ingress
+::  Step 5 — Tunnel ingress
 :: ═══════════════════════════════════════════════════════════════════════
 :step_ingress
-call :hdr "Step 6: Tunnel ingress rules"
-set "SSH_HOST=ssh.!SUBDOMAIN!.workers.dev"
+call :hdr "Step 5: Tunnel ingress rules"
 
 call :config_val ssh_app_aud _ing_aud
 call :config_val team_name _ing_team
@@ -988,10 +1018,9 @@ goto :eof
 :: ═══════════════════════════════════════════════════════════════════════
 :step_save
 call :hdr "Saving configuration"
-set "SSH_HOST=ssh.!SUBDOMAIN!.workers.dev"
 
-set "_cfg_json={\"account_id\":\"!ACCT_ID!\",\"subdomain\":\"!SUBDOMAIN!\",\"tunnel_id\":\"!TUNNEL_ID!\",\"kv_ns_id\":\"!KV_NS_ID!\",\"ssh_host\":\"!SSH_HOST!\"}"
-if defined TUNNEL_TOKEN set "_cfg_json={\"account_id\":\"!ACCT_ID!\",\"subdomain\":\"!SUBDOMAIN!\",\"tunnel_id\":\"!TUNNEL_ID!\",\"kv_ns_id\":\"!KV_NS_ID!\",\"ssh_host\":\"!SSH_HOST!\",\"tunnel_token\":\"!TUNNEL_TOKEN!\"}"
+set "_cfg_json={\"account_id\":\"!ACCT_ID!\",\"subdomain\":\"!SUBDOMAIN!\",\"tunnel_id\":\"!TUNNEL_ID!\",\"ssh_host\":\"!SSH_HOST!\",\"domain\":\"!DOMAIN!\",\"zone_id\":\"!ZONE_ID!\"}"
+if defined TUNNEL_TOKEN set "_cfg_json={\"account_id\":\"!ACCT_ID!\",\"subdomain\":\"!SUBDOMAIN!\",\"tunnel_id\":\"!TUNNEL_ID!\",\"ssh_host\":\"!SSH_HOST!\",\"domain\":\"!DOMAIN!\",\"zone_id\":\"!ZONE_ID!\",\"tunnel_token\":\"!TUNNEL_TOKEN!\"}"
 
 call :save_config "!_cfg_json!"
 call :ok "Config saved to %CFG_FILE%"
@@ -1012,9 +1041,10 @@ goto :eof
 ::  Summary
 :: ═══════════════════════════════════════════════════════════════════════
 :print_summary
-set "SSH_HOST=ssh.!SUBDOMAIN!.workers.dev"
 call :config_val tunnel_token _sum_tok
 call :config_val ssh_ca_public_key _sum_ca
+call :config_val team_name _sum_team
+if "!_sum_team!"=="" set "_sum_team=!TEAM_NAME!"
 
 echo.
 echo ==========================================================
@@ -1022,8 +1052,11 @@ echo   %G%%B%Bootstrap complete!%X%
 echo ==========================================================
 echo.
 echo   Your endpoints:
-echo     Browser SSH : %C%https://!SSH_HOST!%X%  (CF Access login)
+echo     Browser SSH : %C%https://!SSH_HOST!%X%
+if defined _sum_team echo     App Launcher: %C%https://!_sum_team!.cloudflareaccess.com%X%
+echo     CLI SSH     : %C%ssh YOUR_USER@!SSH_HOST!%X%
 echo     TS relay    : %C%https://ts-relay.!SUBDOMAIN!.workers.dev%X%  (Tailscale bypass)
+echo     Domain      : !DOMAIN!
 echo.
 
 if %EMAIL_COUNT% gtr 0 (

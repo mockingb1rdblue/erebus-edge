@@ -10,7 +10,7 @@
 #   ./bootstrap.sh --redeploy
 #   ./bootstrap.sh --skip-access --skip-tsnet
 #   ./bootstrap.sh --build-tsnet
-#   ./bootstrap.sh --workers-only
+#   ./bootstrap.sh --domain myname.xyz
 
 set -o pipefail
 
@@ -26,7 +26,7 @@ CF_CFG_TXT="$TEMP_DIR/cf_config.txt"
 CF_API="https://api.cloudflare.com/client/v4"
 PORTAL_TOKEN_NAME="ssh-portal"
 TUNNEL_NAME="home-ssh"
-COMPAT_DATE="2024-09-23"
+COMPAT_DATE="2025-12-01"
 
 # ── Colours ───────────────────────────────────────────────────────────────
 G='\033[32m'; Y='\033[33m'; C='\033[36m'; R='\033[31m'
@@ -43,11 +43,12 @@ ACCT_NAME=""
 SUBDOMAIN=""
 TUNNEL_ID=""
 TUNNEL_TOKEN=""
-KV_NS_ID=""
 SSH_HOST=""
 SSH_APP_AUD=""
 SSH_CA_KEY=""
 TEAM_NAME=""
+ZONE_ID=""
+DOMAIN=""
 TSNET_OK=false
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -202,22 +203,10 @@ cf_api() {
     local data="${3:-}"
     local url="${CF_API}${path}"
     local result
-    if [ "$method" = "GET" ]; then
-        result=$(curl -sk \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            "$url" 2>/dev/null) || result='{"success":false,"errors":["curl failed"]}'
-    elif [ -n "$data" ]; then
-        result=$(curl -sk -X "$method" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            -d "$data" "$url" 2>/dev/null) || result='{"success":false,"errors":["curl failed"]}'
-    else
-        result=$(curl -sk -X "$method" \
-            -H "Authorization: Bearer $TOKEN" \
-            -H "Content-Type: application/json" \
-            "$url" 2>/dev/null) || result='{"success":false,"errors":["curl failed"]}'
-    fi
+    local -a args=(-sk -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json")
+    [ "$method" != "GET" ] && args+=(-X "$method")
+    [ -n "$data" ] && args+=(-d "$data")
+    result=$(curl "${args[@]}" "$url" 2>/dev/null) || result='{"success":false,"errors":["curl failed"]}'
     echo "$result"
 }
 
@@ -258,31 +247,6 @@ config_val() {
 # ═══════════════════════════════════════════════════════════════════════════
 #  Worker JS generators
 # ═══════════════════════════════════════════════════════════════════════════
-generate_ssh_worker_js() {
-    local tunnel_id="$1" ssh_host="$2"
-    cat << 'WORKEREOF' | sed "s|__TUNNEL_ID__|${tunnel_id}|g; s|__SSH_HOST__|${ssh_host}|g"
-// SSH proxy Worker: forwards cloudflared SSH traffic to the CF Tunnel.
-const TUNNEL   = '__TUNNEL_ID__.cfargotunnel.com';
-const SSH_HOST = '__SSH_HOST__';
-export default {
-  async fetch(request) {
-    const url  = new URL(request.url);
-    const dest = new URL(url.pathname + url.search, `https://${TUNNEL}`);
-    const headers = new Headers();
-    for (const [k, v] of request.headers) {
-      if (/^(cf-|x-forwarded-|x-real-ip)/i.test(k)) continue;
-      headers.set(k, v);
-    }
-    headers.set('Host', SSH_HOST);
-    return fetch(dest.toString(), {
-      method: request.method, headers,
-      body: ['GET','HEAD'].includes(request.method) ? undefined : request.body,
-    });
-  }
-};
-WORKEREOF
-}
-
 generate_ts_relay_worker_js() {
     local relay_host="$1"
     cat << 'WORKEREOF' | sed "s|__RELAY_HOST__|${relay_host}|g"
@@ -527,13 +491,17 @@ create_scoped_token() {
         -H "Authorization: Bearer $broad_token" \
         -H "Content-Type: application/json" \
         "${CF_API}/user/tokens/permission_groups" 2>/dev/null)
-    local pg_json
-    pg_json=$(echo "$groups_resp" | json_py "
-needed = ['Cloudflare Tunnel Edit','Workers Script Edit','Workers KV Storage Edit','Zero Trust Edit']
+    local pg_acct pg_zone
+    pg_acct=$(echo "$groups_resp" | json_py "
+needed = ['Cloudflare Tunnel Edit','Workers Script Edit','Zero Trust Edit']
+groups = [g for g in d.get('result',[]) if g.get('name') in needed]
+import json; print(json.dumps([{'id':g['id']} for g in groups]))")
+    pg_zone=$(echo "$groups_resp" | json_py "
+needed = ['DNS Write']
 groups = [g for g in d.get('result',[]) if g.get('name') in needed]
 import json; print(json.dumps([{'id':g['id']} for g in groups]))")
 
-    if [ -z "$pg_json" ] || [ "$pg_json" = "[]" ]; then
+    if [ -z "$pg_acct" ] || [ "$pg_acct" = "[]" ]; then
         warn "Could not resolve CF permission groups." >&2
         return 1
     fi
@@ -548,6 +516,20 @@ import json; print(json.dumps([{'id':g['id']} for g in groups]))")
     existing_count=$(echo "$tokens_resp" | json_py "
 ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
 print(len(ts))")
+
+    _delete_portal_tokens() {
+        echo "$tokens_resp" | json_py "
+import urllib.request, json, ssl
+ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
+ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
+for t in ts:
+    req = urllib.request.Request('${CF_API}/user/tokens/'+t['id'], method='DELETE')
+    req.add_header('Authorization','Bearer $broad_token')
+    req.add_header('Content-Type','application/json')
+    try: urllib.request.urlopen(req, context=ctx)
+    except: pass
+print(len(ts))" >/dev/null
+    }
 
     if [ "${existing_count:-0}" -gt 0 ] && [ -t 0 ]; then
         printf "\n  ${B}Found existing '${PORTAL_TOKEN_NAME}' token(s).${X}\n" >&2
@@ -569,33 +551,13 @@ for t in ts:
                 [ -n "$tok_val" ] && { echo "$tok_val"; return 0; }
                 ;;
             2)
-                echo "$tokens_resp" | json_py "
-import urllib.request, json, ssl
-ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
-ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
-for t in ts:
-    req = urllib.request.Request('${CF_API}/user/tokens/'+t['id'], method='DELETE')
-    req.add_header('Authorization','Bearer $broad_token')
-    req.add_header('Content-Type','application/json')
-    try: urllib.request.urlopen(req, context=ctx)
-    except: pass
-print(len(ts))" >/dev/null
+                _delete_portal_tokens
                 ok "Deleted old portal token(s)." >&2
                 ;;
         esac
     elif [ "${existing_count:-0}" -gt 0 ]; then
         # Non-interactive: auto-replace existing tokens
-        echo "$tokens_resp" | json_py "
-import urllib.request, json, ssl
-ctx = ssl.create_default_context(); ctx.check_hostname=False; ctx.verify_mode=ssl.CERT_NONE
-ts = [t for t in d.get('result',[]) if t.get('name','').startswith('$PORTAL_TOKEN_NAME')]
-for t in ts:
-    req = urllib.request.Request('${CF_API}/user/tokens/'+t['id'], method='DELETE')
-    req.add_header('Authorization','Bearer $broad_token')
-    req.add_header('Content-Type','application/json')
-    try: urllib.request.urlopen(req, context=ctx)
-    except: pass
-print(len(ts))" >/dev/null
+        _delete_portal_tokens
         ok "Replaced existing portal token(s)." >&2
     fi
 
@@ -603,21 +565,29 @@ print(len(ts))" >/dev/null
     printf "\n  Creating '${PORTAL_TOKEN_NAME}' token with permissions:\n" >&2
     printf "  ${D}. Cloudflare Tunnel Edit${X}\n" >&2
     printf "  ${D}. Workers Script Edit${X}\n" >&2
-    printf "  ${D}. Workers KV Storage Edit${X}\n" >&2
     printf "  ${D}. Zero Trust Edit${X}\n" >&2
+    printf "  ${D}. DNS Write (zone-level)${X}\n" >&2
 
     local payload
     payload=$(python3 -c "
 import json, sys
-pg = json.loads(sys.argv[1])
+pg_acct = json.loads(sys.argv[1])
+pg_zone = json.loads(sys.argv[2])
+policies = [{
+    'effect': 'allow',
+    'resources': {'com.cloudflare.api.account.$acct_id': '*'},
+    'permission_groups': pg_acct,
+}]
+if pg_zone:
+    policies.append({
+        'effect': 'allow',
+        'resources': {'com.cloudflare.api.account.zone.*': '*'},
+        'permission_groups': pg_zone,
+    })
 print(json.dumps({
     'name': '$PORTAL_TOKEN_NAME',
-    'policies': [{
-        'effect': 'allow',
-        'resources': {'com.cloudflare.api.account.$acct_id': '*'},
-        'permission_groups': pg,
-    }],
-}))" "$pg_json")
+    'policies': policies,
+}))" "$pg_acct" "$pg_zone")
 
     local result
     result=$(curl -sk -X POST \
@@ -670,7 +640,7 @@ _do_cloudflared_login() {
     # Returns 0 on success (TOKEN is set), 1 on failure.
     printf "\n  ${Y}NOTE:${X} This grants a certificate with broad account access.\n" >&2
     printf "  ${D}The script will immediately create a scoped token with only${X}\n" >&2
-    printf "  ${D}the 4 required permissions, but the initial cert is overpowered.${X}\n\n" >&2
+    printf "  ${D}the required permissions, but the initial cert is overpowered.${X}\n\n" >&2
     local broad
     broad=$(browser_login)
     if [ -z "$broad" ]; then
@@ -717,15 +687,16 @@ _do_dashboard_auth() {
     printf "  ${C}1.${X} Click ${B}Create Token${X}\n"
     printf "  ${C}2.${X} At the top, click ${B}Get started${X} next to Custom Token\n"
     printf "  ${C}3.${X} Token name: ${B}ssh-portal${X}\n"
-    printf "  ${C}4.${X} Add these 4 permissions (click ${B}+ Add more${X} for each):\n\n"
+    printf "  ${C}4.${X} Add these permissions (click ${B}+ Add more${X} for each):\n\n"
     printf "       ${D}Scope${X}      ${D}Resource${X}                    ${D}Access${X}\n"
     printf "       Account    Cloudflare Tunnel           Edit\n"
     printf "       Account    Workers Scripts              Edit\n"
-    printf "       Account    Workers KV Storage           Edit\n"
-    printf "       Account    Zero Trust                   Edit\n\n"
+    printf "       Account    Zero Trust                   Edit\n"
+    printf "       Zone       DNS                          Edit\n\n"
     printf "  ${C}5.${X} Account Resources: ${B}All accounts${X} (or pick yours)\n"
-    printf "  ${C}6.${X} Click ${B}Continue to summary${X} -> ${B}Create Token${X}\n"
-    printf "  ${C}7.${X} ${B}Copy the token${X} and paste it below\n"
+    printf "  ${C}6.${X} Zone Resources: ${B}All zones${X} (or pick your domain)\n"
+    printf "  ${C}7.${X} Click ${B}Continue to summary${X} -> ${B}Create Token${X}\n"
+    printf "  ${C}8.${X} ${B}Copy the token${X} and paste it below\n"
     printf "     ${D}(CF only shows it once — copy it now!)${X}\n"
 
     printf "\n  Paste token: "
@@ -771,7 +742,7 @@ step_auth() {
     printf "\n  ${B}Authentication method:${X}\n\n"
     printf "  ${B}1${X}  Open CF Dashboard + paste token  ${G}(recommended)${X}\n"
     printf "     ${D}Opens the token creation page with step-by-step instructions.${X}\n"
-    printf "     ${D}You create a token scoped to exactly the 4 permissions needed.${X}\n\n"
+    printf "     ${D}You create a token scoped to exactly the permissions needed.${X}\n\n"
     printf "  ${B}2${X}  Paste an existing API token\n"
     printf "     ${D}If you already created a token with the right permissions.${X}\n\n"
     printf "  ${B}3${X}  cloudflared tunnel login  ${D}(power users)${X}\n"
@@ -834,7 +805,6 @@ step_discover() {
         printf "  Enter your workers.dev subdomain (e.g. 'alice'): "
         read -r SUBDOMAIN
     fi
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
     ok "workers.dev subdomain: ${SUBDOMAIN}.workers.dev"
     ok "Account: $ACCT_NAME (${ACCT_ID:0:8}...)"
 }
@@ -891,58 +861,125 @@ print(t['id'] if t else '')")
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Step 4 — KV namespace
+#  Step 4 — Domain & DNS
 # ═══════════════════════════════════════════════════════════════════════════
-step_kv() {
-    hdr "Step 4: KV Namespace (ssh-portal)"
-    local r
-    r=$(cf_api GET "/accounts/${ACCT_ID}/storage/kv/namespaces")
-    local existing_id
-    existing_id=$(echo "$r" | json_py "
-ns = next((n for n in d.get('result',[]) if n.get('title')=='ssh-portal'), None)
-print(ns['id'] if ns else '')")
+step_domain() {
+    hdr "Step 4: Domain & DNS"
 
-    if [ -n "$existing_id" ]; then
-        KV_NS_ID="$existing_id"
-        ok "Found existing KV namespace: ${KV_NS_ID:0:8}..."
-        return
+    # If --domain was passed, use it; otherwise try config
+    if [ -n "$DOMAIN" ]; then
+        ok "Using domain: $DOMAIN"
+    else
+        local cfg_domain
+        cfg_domain=$(config_val 'domain')
+        if [ -n "$cfg_domain" ]; then
+            DOMAIN="$cfg_domain"
+            ok "Domain from config: $DOMAIN"
+        fi
     fi
 
-    r=$(cf_api POST "/accounts/${ACCT_ID}/storage/kv/namespaces" '{"title":"ssh-portal"}')
-    local success
-    success=$(echo "$r" | json_get "success")
-    if [ "$success" != "true" ]; then
-        err "Failed to create KV namespace: $(echo "$r" | json_get 'errors')"
+    # List zones on the account
+    local r
+    r=$(cf_api GET "/zones?account.id=${ACCT_ID}&status=active&per_page=50")
+
+    local zone_count
+    zone_count=$(echo "$r" | json_py "print(len(d.get('result',[])))")
+
+    if [ "${zone_count:-0}" = "0" ] || [ -z "$zone_count" ]; then
+        printf "\n"
+        err "No domains found on this Cloudflare account."
+        printf "\n"
+        printf "  ${B}You need a domain on Cloudflare to route SSH traffic.${X}\n"
+        printf "  This is the one prerequisite beyond a free CF account.\n\n"
+        printf "  ${C}Cheapest option (~\$1/year):${X}\n"
+        printf "    1. Go to ${B}https://dash.cloudflare.com/?to=/:account/domains/register${X}\n"
+        printf "    2. Search for a cheap domain (e.g. yourname.xyz)\n"
+        printf "    3. Buy it -- CF Registrar charges at-cost, no markup\n\n"
+        printf "  ${C}Or bring your own domain:${X}\n"
+        printf "    1. Go to ${B}https://dash.cloudflare.com/?to=/:account/add-site${X}\n"
+        printf "    2. Add your domain and follow the nameserver instructions\n"
+        printf "    3. Wait for the domain to become active (usually minutes)\n\n"
+        printf "  Then re-run this bootstrap.\n"
         exit 1
     fi
-    KV_NS_ID=$(echo "$r" | json_get "result.id")
-    ok "Created KV namespace: ${KV_NS_ID:0:8}..."
-}
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  Step 5 — Deploy SSH Worker
-# ═══════════════════════════════════════════════════════════════════════════
-step_workers() {
-    hdr "Step 5: Deploy SSH Worker"
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
+    if [ -z "$DOMAIN" ]; then
+        if [ "$zone_count" = "1" ]; then
+            DOMAIN=$(echo "$r" | json_get "result[0].name")
+            ZONE_ID=$(echo "$r" | json_get "result[0].id")
+            ok "Auto-selected domain: $DOMAIN (only zone on account)"
+        elif ! [ -t 0 ]; then
+            # Non-interactive: auto-select first domain
+            DOMAIN=$(echo "$r" | json_get "result[0].name")
+            ZONE_ID=$(echo "$r" | json_get "result[0].id")
+            ok "Auto-selected domain: $DOMAIN (non-interactive mode)"
+        else
+            printf "\n  ${B}Select a domain for SSH access:${X}\n"
+            echo "$r" | json_py "
+for i, z in enumerate(d.get('result',[]), 1):
+    print(f'  {i}  {z[\"name\"]}')"
+            printf "\n  Domain [1]: "
+            read -r choice
+            choice="${choice:-1}"
+            DOMAIN=$(echo "$r" | json_py "print(d['result'][int(sys.argv[1])-1]['name'])" "$choice" 2>/dev/null)
+            ZONE_ID=$(echo "$r" | json_py "print(d['result'][int(sys.argv[1])-1]['id'])" "$choice" 2>/dev/null)
+            [ -z "$DOMAIN" ] && { DOMAIN=$(echo "$r" | json_get "result[0].name"); ZONE_ID=$(echo "$r" | json_get "result[0].id"); }
+        fi
+    fi
 
-    local js
-    js=$(generate_ssh_worker_js "$TUNNEL_ID" "$SSH_HOST")
+    # Get zone ID if not yet set
+    if [ -z "$ZONE_ID" ]; then
+        ZONE_ID=$(echo "$r" | json_py "
+z = next((z for z in d.get('result',[]) if z.get('name')=='$DOMAIN'), None)
+print(z['id'] if z else '')")
+    fi
 
-    printf "  Deploying 'ssh' Worker ... "
-    if deploy_worker "$ACCT_ID" "ssh" "$js"; then
-        printf "${G}OK${X}  ->  https://${SSH_HOST}\n"
+    if [ -z "$ZONE_ID" ]; then
+        err "Could not find zone ID for domain '$DOMAIN'."
+        err "Make sure the domain is added to your CF account and is active."
+        exit 1
+    fi
+
+    SSH_HOST="ssh.${DOMAIN}"
+    ok "SSH hostname: $SSH_HOST"
+
+    # Create DNS CNAME: ssh.domain -> TUNNEL_ID.cfargotunnel.com (proxied)
+    local dns_r
+    dns_r=$(cf_api GET "/zones/${ZONE_ID}/dns_records?type=CNAME&name=${SSH_HOST}")
+    local existing_dns
+    existing_dns=$(echo "$dns_r" | json_py "
+recs = d.get('result',[])
+rec = next((r for r in recs if r.get('name')=='$SSH_HOST'), None)
+print(rec['id'] if rec else '')")
+
+    local cname_target="${TUNNEL_ID}.cfargotunnel.com"
+
+    if [ -n "$existing_dns" ]; then
+        # Update existing record to point to current tunnel
+        cf_api PUT "/zones/${ZONE_ID}/dns_records/${existing_dns}" \
+            "{\"type\":\"CNAME\",\"name\":\"ssh\",\"content\":\"${cname_target}\",\"proxied\":true}" >/dev/null
+        ok "DNS CNAME updated: $SSH_HOST -> $cname_target (proxied)"
     else
-        printf "${R}FAILED${X}\n"
+        local dns_payload="{\"type\":\"CNAME\",\"name\":\"ssh\",\"content\":\"${cname_target}\",\"proxied\":true}"
+        local dns_result
+        dns_result=$(cf_api POST "/zones/${ZONE_ID}/dns_records" "$dns_payload")
+        local success
+        success=$(echo "$dns_result" | json_get "success")
+        if [ "$success" = "true" ]; then
+            ok "DNS CNAME created: $SSH_HOST -> $cname_target (proxied)"
+        else
+            warn "DNS record creation failed: $(echo "$dns_result" | json_get 'errors')"
+            warn "You may need to add DNS Edit permission to your API token."
+            warn "Create it manually: CNAME  ssh  ->  ${cname_target}  (proxied/orange cloud)"
+        fi
     fi
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Step 6 — Tunnel ingress
+#  Step 5 — Tunnel ingress
 # ═══════════════════════════════════════════════════════════════════════════
 step_ingress() {
-    hdr "Step 6: Tunnel ingress rules"
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
+    hdr "Step 5: Tunnel ingress rules"
     local cfg_url="/accounts/${ACCT_ID}/cfd_tunnel/${TUNNEL_ID}/configurations"
 
     local r
@@ -1003,7 +1040,7 @@ print(json.dumps({'config': {'ingress': rules}}))")
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Step 7 — CF Access (Zero Trust)
+#  Step 6 — CF Access (Zero Trust)
 # ═══════════════════════════════════════════════════════════════════════════
 ensure_org() {
     local r
@@ -1246,7 +1283,7 @@ ensure_ssh_ca() {
 
 step_access() {
     local -a emails=("$@")
-    hdr "Step 7: CF Zero Trust Access (OTP email + browser SSH + short-lived certs)"
+    hdr "Step 6: CF Zero Trust Access (OTP email + browser SSH + short-lived certs)"
 
     if [ ${#emails[@]} -eq 0 ]; then
         printf "  ${D}Skipped (no emails provided).${X}\n"
@@ -1262,7 +1299,6 @@ step_access() {
     ensure_otp_idp
 
     # SSH app
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
     local ssh_app_id
     ssh_app_id=$(ensure_app "$SSH_HOST" "SSH Browser Terminal" "ssh" "24h")
     if [ -n "$ssh_app_id" ]; then
@@ -1277,10 +1313,10 @@ step_access() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Step 8 — Deploy ts-relay Worker
+#  Step 7 — Deploy ts-relay Worker
 # ═══════════════════════════════════════════════════════════════════════════
 step_ts_relay() {
-    hdr "Step 8: Deploy ts-relay Worker (Tailscale bypass)"
+    hdr "Step 7: Deploy ts-relay Worker (Tailscale bypass)"
     local relay_host="ts-relay.${SUBDOMAIN}.workers.dev"
     local relay_url="https://${relay_host}"
 
@@ -1433,7 +1469,7 @@ build_tsnet() {
 }
 
 step_build_tsnet() {
-    hdr "Step 9: Build tsnet binary (userspace Tailscale)"
+    hdr "Step 8: Build tsnet binary (userspace Tailscale)"
 
     # Connectivity pre-check
     printf "  Checking Tailscale control plane connectivity...\n"
@@ -1469,7 +1505,6 @@ step_build_tsnet() {
 # ═══════════════════════════════════════════════════════════════════════════
 step_save() {
     hdr "Saving configuration"
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
 
     local cfg_json
     cfg_json=$(python3 -c "
@@ -1478,8 +1513,9 @@ cfg = {
     'account_id': '$ACCT_ID',
     'subdomain':  '$SUBDOMAIN',
     'tunnel_id':  '$TUNNEL_ID',
-    'kv_ns_id':   '$KV_NS_ID',
     'ssh_host':   '$SSH_HOST',
+    'domain':     '$DOMAIN',
+    'zone_id':    '$ZONE_ID',
 }
 if '$TUNNEL_TOKEN':
     cfg['tunnel_token'] = '$TUNNEL_TOKEN'
@@ -1507,19 +1543,25 @@ print(json.dumps(cfg))")
 # ═══════════════════════════════════════════════════════════════════════════
 print_summary() {
     local -a emails=("$@")
-    SSH_HOST="ssh.${SUBDOMAIN}.workers.dev"
 
     # Reload config to get latest values
-    local tunnel_tok ssh_ca_key
+    local tunnel_tok ssh_ca_key team_name
     tunnel_tok=$(config_val "tunnel_token")
     ssh_ca_key=$(config_val "ssh_ca_public_key")
+    team_name=$(config_val "team_name")
+    [ -z "$team_name" ] && team_name="$TEAM_NAME"
 
     printf "\n%s\n" "$(printf '═%.0s' $(seq 1 58))"
     printf "  ${G}${B}Bootstrap complete!${X}\n"
     printf "%s\n" "$(printf '═%.0s' $(seq 1 58))"
     printf "\n  Your endpoints:\n"
-    printf "    Browser SSH : ${C}https://${SSH_HOST}${X}  (CF Access login)\n"
+    printf "    Browser SSH : ${C}https://${SSH_HOST}${X}\n"
+    if [ -n "$team_name" ]; then
+        printf "    App Launcher: ${C}https://${team_name}.cloudflareaccess.com${X}\n"
+    fi
+    printf "    CLI SSH     : ${C}ssh YOUR_USER@${SSH_HOST}${X}\n"
     printf "    TS relay    : ${C}https://ts-relay.${SUBDOMAIN}.workers.dev${X}  (Tailscale bypass)\n\n"
+    printf "    Domain      : ${DOMAIN}\n\n"
 
     if [ ${#emails[@]} -gt 0 ] && [ -n "${emails[0]}" ]; then
         printf "  CF Access (OTP email): %s\n" "$(IFS=', '; echo "${emails[*]}")"
@@ -1533,11 +1575,6 @@ print_summary() {
     else
         tsnet_note="  ${Y}[!!]${X} tsnet not built. Run later:  $0 --build-tsnet"
     fi
-
-    # Build home installer args
-    local home_args="--token ${tunnel_tok}"
-    [ -n "$ssh_ca_key" ] && home_args="${home_args} --ca-key \"${ssh_ca_key}\""
-    home_args="${home_args} --ssh-host ${SSH_HOST}"
 
     printf "  ${G}${B}What to do next:${X}\n\n"
     printf "  ${C}STEP 1 -- Set up your HOME machine${X} (the one you SSH into)\n\n"
@@ -1553,14 +1590,18 @@ print_summary() {
     printf "    ${D}Asks: Quick start (no root) or Full system setup (sudo/admin).${X}\n"
     printf "    ${D}Or pass --sudo/--no-sudo (--admin/--no-admin on Windows).${X}\n\n"
     printf "  ${C}STEP 2 -- Set up your WORK machine${X} (the one you connect from)\n"
-    printf "  Copy installers/ to your work machine, then run:\n\n"
+    printf "  Copy installers/ + ../erebus-temp/ to your work machine, then run:\n\n"
     printf "    ${Y}Linux / Mac:${X}\n"
-    printf "      chmod +x work_linux_mac.sh && ./work_linux_mac.sh --ssh-host %s\n\n" "$SSH_HOST"
+    printf "      chmod +x work_linux_mac.sh && ./work_linux_mac.sh\n\n"
     printf "    ${Y}Windows (no admin needed):${X}\n"
-    printf "      work_windows.bat %s\n\n" "$SSH_HOST"
-    printf "  Windows .bat files work even when GPO blocks PowerShell.\n\n"
+    printf "      work_windows.bat\n\n"
+    printf "    ${D}Auto-reads SSH host from config. Or pass: --ssh-host %s${X}\n" "$SSH_HOST"
+    printf "    ${D}Windows .bat files work even when GPO blocks PowerShell.${X}\n\n"
     printf "  ${C}STEP 3 -- Connect${X}\n"
-    printf "    Browser : https://%s  (email OTP login)\n" "$SSH_HOST"
+    printf "    Browser : https://%s  (email OTP -> browser SSH terminal)\n" "$SSH_HOST"
+    if [ -n "$team_name" ]; then
+        printf "    Launcher: https://%s.cloudflareaccess.com  (all your apps)\n" "$team_name"
+    fi
     printf "    CLI     : ssh YOUR_USER@%s\n\n" "$SSH_HOST"
     printf "  Tailscale (optional, works independently):\n"
     printf "%b\n" "$tsnet_note"
@@ -1575,9 +1616,9 @@ ARG_REDEPLOY=false
 ARG_SKIP_ACCESS=false
 ARG_SKIP_TSNET=false
 ARG_BUILD_TSNET=false
-ARG_WORKERS_ONLY=false
 ARG_CF_TOKEN=""
 ARG_SAVE_TOKEN=false
+ARG_DOMAIN=""
 ARG_EMAILS=()
 
 while [ $# -gt 0 ]; do
@@ -1586,24 +1627,27 @@ while [ $# -gt 0 ]; do
         --skip-access)  ARG_SKIP_ACCESS=true ;;
         --skip-tsnet)   ARG_SKIP_TSNET=true ;;
         --build-tsnet)  ARG_BUILD_TSNET=true ;;
-        --workers-only) ARG_WORKERS_ONLY=true ;;
         --cf-token)     shift; ARG_CF_TOKEN="$1" ;;
         --save-token)   ARG_SAVE_TOKEN=true ;;
+        --domain)       shift; ARG_DOMAIN="$1" ;;
         --email)        shift; ARG_EMAILS+=("$1") ;;
         -h|--help)
             cat <<'HELPEOF'
 Usage: bootstrap.sh [OPTIONS]
 
-SSH Portal bootstrap wizard. Sets up CF Tunnel, Workers, Access, and
+SSH Portal bootstrap wizard. Sets up CF Tunnel, DNS, Access, and
 optionally tsnet on your Cloudflare account.
+
+PREREQUISITE: A domain on your Cloudflare account (even a $1/yr .xyz).
+              The wizard guides you through this if you don't have one yet.
 
 Authentication (choose one, or interactive menu):
   (default)           Opens CF Dashboard with step-by-step instructions to
-                      create a token scoped to exactly the 4 permissions needed.
+                      create a token with the required permissions.
                       RECOMMENDED — minimal permissions, most secure.
   --cf-token TOKEN    Pre-made CF API token (fully non-interactive, no browser).
                       Token needs: Cloudflare Tunnel Edit, Workers Scripts Edit,
-                      Workers KV Storage Edit, Zero Trust Edit
+                      Zero Trust Edit, Zone DNS Edit
   --save-token        Auto-save token to macOS Keychain or Linux file (no prompt)
 
   Interactive mode also offers:
@@ -1615,9 +1659,12 @@ Access control:
                       If omitted and --skip-access is not set, prompts interactively
                       (skipped automatically when using --cf-token)
 
+Domain:
+  --domain DOMAIN     Domain to use for SSH hostname (e.g. yourdomain.com)
+                      If omitted, auto-selects or prompts from your CF zones.
+
 Modes:
-  --redeploy          Re-deploy Workers using existing config (skip tunnel/KV setup)
-  --workers-only      Skip tunnel/Access, just deploy Workers
+  --redeploy          Re-run DNS + ingress + Access with existing config
   --build-tsnet       Only rebuild the tsnet binary (skip everything else)
 
 Skip flags:
@@ -1631,9 +1678,12 @@ Examples:
   # Interactive (recommended for first run — opens browser for auth):
   ./bootstrap.sh --email user@example.com
 
+  # With a specific domain:
+  ./bootstrap.sh --email user@example.com --domain myname.xyz
+
   # Fully automated (requires pre-made token):
   ./bootstrap.sh --cf-token "YOUR_TOKEN" --save-token \
-    --email user@example.com --skip-tsnet
+    --email user@example.com --domain myname.xyz --skip-tsnet
 
 Artifacts are written to ../erebus-temp/ (repo stays clean).
 HELPEOF
@@ -1672,13 +1722,14 @@ main() {
         ACCT_ID=$(config_val "account_id")
         SUBDOMAIN=$(config_val "subdomain")
         TUNNEL_ID=$(config_val "tunnel_id")
-        KV_NS_ID=$(config_val "kv_ns_id")
+        DOMAIN=$(config_val "domain")
+        ZONE_ID=$(config_val "zone_id")
+        SSH_HOST=$(config_val "ssh_host")
 
         local missing=()
         [ -z "$ACCT_ID" ]   && missing+=("account_id")
         [ -z "$SUBDOMAIN" ] && missing+=("subdomain")
         [ -z "$TUNNEL_ID" ] && missing+=("tunnel_id")
-        [ -z "$KV_NS_ID" ]  && missing+=("kv_ns_id")
         if [ ${#missing[@]} -gt 0 ]; then
             err "Config incomplete -- missing: ${missing[*]}"
             err "Run full bootstrap first: $0"
@@ -1686,44 +1737,37 @@ main() {
         fi
 
         step_auth
-        step_workers
+        [ -n "$ARG_DOMAIN" ] && DOMAIN="$ARG_DOMAIN"
+        step_domain
+        step_ingress
         step_ts_relay
         if [ "$ARG_SKIP_TSNET" != "true" ]; then
             step_build_tsnet && TSNET_OK=true
         fi
+        step_save
         print_summary
         return
     fi
 
     # ── Full wizard ───────────────────────────────────────────────────
+    [ -n "$ARG_DOMAIN" ] && DOMAIN="$ARG_DOMAIN"
+
     step_auth
     step_discover
-
-    if [ "$ARG_WORKERS_ONLY" != "true" ]; then
-        step_tunnel
-        step_kv
-    else
-        TUNNEL_ID=$(config_val "tunnel_id")
-        KV_NS_ID=$(config_val "kv_ns_id")
-    fi
+    step_tunnel
+    step_domain
 
     # Save config early so --redeploy works even if later steps fail
     step_save
 
-    step_workers
+    step_ingress
 
-    if [ "$ARG_WORKERS_ONLY" != "true" ]; then
-        step_ingress
-    fi
-
-    # ts-relay Worker
-    if [ "$ARG_WORKERS_ONLY" != "true" ]; then
-        step_ts_relay
-    fi
+    # ts-relay Worker (still on workers.dev -- works fine for Tailscale)
+    step_ts_relay
 
     # CF Access: collect emails
     local -a emails=("${ARG_EMAILS[@]}")
-    if [ "$ARG_SKIP_ACCESS" != "true" ] && [ "$ARG_WORKERS_ONLY" != "true" ] && [ ${#emails[@]} -eq 0 ] && [ -z "$ARG_CF_TOKEN" ]; then
+    if [ "$ARG_SKIP_ACCESS" != "true" ] && [ ${#emails[@]} -eq 0 ] && [ -z "$ARG_CF_TOKEN" ]; then
         # Only prompt interactively if not using --cf-token (non-interactive mode)
         printf "\n  ${B}CF Zero Trust Access${X} protects the terminal (shell on home machine).\n"
         printf "  Enter email addresses to allow. Press Enter with no input to skip.\n"

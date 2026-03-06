@@ -22,7 +22,7 @@ Usage:
   ./work_linux_mac.sh --ssh-host <HOST>
 
 Options:
-  --ssh-host <HOST>     Your SSH hostname (e.g. ssh.you.workers.dev)
+  --ssh-host <HOST>     Your SSH hostname (e.g. ssh.yourdomain.com)
   --help, -h            Show this help
 
 If you ran bootstrap.sh from this repo, just run with no arguments.
@@ -79,11 +79,11 @@ if [[ -z "$SSH_HOST" ]]; then
         echo "  │  SSH host not found -- let's set it up.                 │"
         echo "  └─────────────────────────────────────────────────────────┘"
         echo ""
-        echo "  Your SSH host looks like:  ssh.<yourname>.workers.dev"
+        echo "  Your SSH host looks like:  ssh.yourdomain.com"
         echo ""
         echo "  Where to find it:"
         echo "    1. If you ran bootstrap, it printed your endpoints at the end."
-        echo "       Look for the line:  Browser SSH : https://ssh.XXXX.workers.dev"
+        echo "       Look for the line:  Browser SSH : https://ssh.yourdomain.com"
         echo ""
         echo "    2. If someone else set this up for you, ask them for the SSH"
         echo "       host -- they'll have it from their bootstrap output."
@@ -92,8 +92,8 @@ if [[ -z "$SSH_HOST" ]]; then
         echo "       host in the banner at the top and the summary at the end."
         echo ""
         echo "    4. You can also find it in the Cloudflare dashboard:"
-        echo "       dash.cloudflare.com -> Workers & Pages -> look for 'ssh-proxy'"
-        echo "       The URL will be listed as: ssh.<yourname>.workers.dev"
+        echo "       dash.cloudflare.com -> DNS -> look for a CNAME record named 'ssh'"
+        echo "       The full hostname is: ssh.yourdomain.com"
         echo ""
         read -rp "  Paste your SSH host here: " SSH_HOST
         echo ""
@@ -108,7 +108,7 @@ if [[ -z "$SSH_HOST" ]]; then
     echo "  directory so the script can find the config automatically."
     echo ""
     echo "  Otherwise, pass it directly:"
-    echo "    $0 --ssh-host ssh.yourname.workers.dev"
+    echo "    $0 --ssh-host ssh.yourdomain.com"
     echo ""
     echo "  Use --help for all options."
     exit 1
