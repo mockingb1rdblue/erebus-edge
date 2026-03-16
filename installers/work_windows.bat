@@ -20,6 +20,8 @@ REM ═════════════════════════�
 set "SSH_HOST="
 set "RELAY_HOST="
 set "SUBDOMAIN="
+set "SVC_ID="
+set "SVC_SECRET="
 
 REM ── Parse arguments ───────────────────────────────────────────
 :parse_args
@@ -27,6 +29,8 @@ if "%~1"=="" goto :args_done
 if /i "%~1"=="--ssh-host" ( set "SSH_HOST=%~2" & shift & shift & goto :parse_args )
 if /i "%~1"=="-ssh-host"  ( set "SSH_HOST=%~2" & shift & shift & goto :parse_args )
 if /i "%~1"=="--relay"    ( set "RELAY_HOST=%~2" & shift & shift & goto :parse_args )
+if /i "%~1"=="--id"       ( set "SVC_ID=%~2" & shift & shift & goto :parse_args )
+if /i "%~1"=="--secret"   ( set "SVC_SECRET=%~2" & shift & shift & goto :parse_args )
 if /i "%~1"=="--help"     goto :show_help
 if /i "%~1"=="-help"      goto :show_help
 if /i "%~1"=="-h"         goto :show_help
@@ -92,6 +96,17 @@ if not "%_CFG_FILE%"=="" (
                 set "_RAW=!_RAW:"=!"
                 set "SUBDOMAIN=!_RAW!"
             )
+        )
+    )
+    REM Read service token credentials for relay auth
+    if "%SVC_ID%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).service_token_id" 2^>nul`) do (
+            set "SVC_ID=%%v"
+        )
+    )
+    if "%SVC_SECRET%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).service_token_secret" 2^>nul`) do (
+            set "SVC_SECRET=%%v"
         )
     )
     if not "!SSH_HOST!"=="" (
@@ -246,16 +261,31 @@ if not "!RELAY_HOST!"=="" (
 
 :proxy_done
 
-REM ── 4. Create connect.bat ─────────────────────────────────────
+REM ── 4. Build cloudflared command ─────────────────────────────
+REM   Direct mode:  cloudflared access ssh --hostname SSH_HOST
+REM   Relay mode:   cloudflared access ssh --hostname RELAY --id ID --secret SECRET
+set "CF_CMD="%CF_PATH%" access ssh --hostname %PROXY_HOST%"
+if not "%PROXY_HOST%"=="%SSH_HOST%" (
+    if not "%SVC_ID%"=="" if not "%SVC_SECRET%"=="" (
+        set "CF_CMD="%CF_PATH%" access ssh --hostname %PROXY_HOST% --id %SVC_ID% --secret %SVC_SECRET%"
+        echo   [OK]  Service token loaded for relay auth
+    ) else (
+        echo   [!!]  WARNING: No service token found in config.
+        echo         Relay mode requires a service token for auth.
+        echo         Add service_token_id and service_token_secret to portal_config.json
+    )
+)
+
+REM ── 5. Create connect.bat ─────────────────────────────────────
 set "CONNECT=%INSTALL_DIR%\connect.bat"
 (
     echo @echo off
     echo set /p RUSER=Username on remote host:
-    echo ssh -o "ProxyCommand=""%CF_PATH%"" access ssh --hostname %PROXY_HOST%" %%RUSER%%@%SSH_HOST%
+    echo ssh -o "ProxyCommand=!CF_CMD!" %%RUSER%%@%SSH_HOST%
 ) > "%CONNECT%"
 echo   [OK]  Created %CONNECT%
 
-REM ── 5. SSH config entry ───────────────────────────────────────
+REM ── 6. SSH config entry ───────────────────────────────────────
 set "SSH_DIR=%USERPROFILE%\.ssh"
 set "SSH_CFG=%SSH_DIR%\config"
 if not exist "%SSH_DIR%" mkdir "%SSH_DIR%"
@@ -288,7 +318,7 @@ if exist "%SSH_CFG%" (
 echo.>> "%SSH_CFG%"
 echo # erebus-edge -- CF Tunnel SSH>> "%SSH_CFG%"
 echo Host %SSH_HOST%>> "%SSH_CFG%"
-echo     ProxyCommand "%CF_PATH%" access ssh --hostname %PROXY_HOST%>> "%SSH_CFG%"
+echo     ProxyCommand !CF_CMD!>> "%SSH_CFG%"
 echo     StrictHostKeyChecking no>> "%SSH_CFG%"
 echo     UserKnownHostsFile NUL>> "%SSH_CFG%"
 
