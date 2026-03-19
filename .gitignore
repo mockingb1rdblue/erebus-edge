@@ -24,3 +24,6 @@ tsnet/go.sum
 
 # ── OS junk ──────────────────────────────────────────────────────────────────
 .DS_Store
+
+# Claude Code agent workflows
+.agent/

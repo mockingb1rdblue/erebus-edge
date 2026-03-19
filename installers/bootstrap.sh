@@ -1863,11 +1863,17 @@ while [ $# -gt 0 ]; do
             cat <<'HELPEOF'
 Usage: bootstrap.sh [OPTIONS]
 
-SSH Portal bootstrap wizard. Sets up CF Tunnel, DNS, Access, and
-optionally tsnet on your Cloudflare account.
+SSH Portal bootstrap wizard. Sets up CF Tunnel, DNS, Access, the
+edge-sync Worker (browser terminal relay), and optionally tsnet
+on your Cloudflare account.
 
 PREREQUISITE: A domain on your Cloudflare account (even a $1/yr .xyz).
               The wizard guides you through this if you don't have one yet.
+
+OUTPUT: After completion, your browser terminal URL is printed:
+          https://edge-sync.YOUR_SUBDOMAIN.workers.dev
+        Open it from any browser — no install needed on the work machine.
+        Config is saved to ../erebus-temp/keys/portal_config.json.
 
 Authentication (choose one, or interactive menu):
   (default)           Opens CF Dashboard with step-by-step instructions to

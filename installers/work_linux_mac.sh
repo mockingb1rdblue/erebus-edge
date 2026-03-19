@@ -17,16 +17,85 @@ SSH_HOST=""
 
 show_help() {
     cat <<'HELP'
-Usage:
-  ./work_linux_mac.sh                          (auto-reads from ../erebus-temp/)
-  ./work_linux_mac.sh --ssh-host <HOST>
+erebus-edge — Work Machine Setup (Linux / macOS)
 
-Options:
+  Sets up the machine you connect FROM (your corporate laptop).
+  Downloads cloudflared and configures SSH — no admin/sudo needed.
+
+PREREQUISITES:
+  1. Run bootstrap.sh first (creates tunnel, DNS, Access policies).
+  2. Run home_linux_mac.sh on your home machine (starts the tunnel).
+  3. If bootstrap ran on a different machine, copy the repo and the
+     ../erebus-temp/ folder here, or pass --ssh-host manually.
+
+USAGE:
+  ./work_linux_mac.sh                          Auto-reads config
+  ./work_linux_mac.sh --ssh-host <HOST>        Manual host
+
+OPTIONS:
   --ssh-host <HOST>     Your SSH hostname (e.g. ssh.yourdomain.com)
-  --help, -h            Show this help
+  -h, --help            Show this help
 
-If you ran bootstrap.sh from this repo, just run with no arguments.
-The script auto-reads your SSH host from ../erebus-temp/keys/portal_config.json.
+WHAT IT DOES (step by step):
+  1. Reads SSH host from ../erebus-temp/keys/portal_config.json
+     (or accepts --ssh-host flag)
+  2. Downloads cloudflared to ~/.erebus-edge/ (no admin needed)
+  3. Creates a connect helper script (~/.erebus-edge/connect.sh)
+  4. Adds an SSH config entry so "ssh user@host" just works
+  5. If corporate DNS blocks your custom domain, auto-detects
+     and routes through the workers.dev relay instead
+
+BROWSER TERMINAL (no setup needed):
+  The browser terminal needs NO configuration on the work machine.
+  Just open this URL in any browser:
+
+    https://edge-sync.YOUR_SUBDOMAIN.workers.dev
+
+  No installs, no SSH, no cloudflared. Works on any device with
+  a browser — phone, tablet, Chromebook, locked-down laptop.
+  This is the recommended way to connect from corporate networks.
+
+  The URL is printed at the end of bootstrap and home installer.
+  You can also find it in ../erebus-temp/keys/portal_config.json
+  under the "edge_sync_url" key.
+
+CLI SSH (optional, for power users):
+  After running this script:
+    ssh YOUR_USER@ssh.yourdomain.com
+
+  Cloudflare Access will open a browser window for email OTP login
+  on the first connection. After that, sessions are cached.
+
+CORPORATE DNS BLOCKED?
+  Many corporate networks block DNS for unknown domains. This
+  script detects the block automatically and routes through
+  the workers.dev relay (deployed by bootstrap). No action needed.
+
+  If auto-detection fails, you can pass the relay explicitly
+  in portal_config.json or re-run the work installer.
+
+TROUBLESHOOTING:
+  "ssh: Could not resolve hostname"
+    Corporate DNS is blocking. Re-run this script — it will
+    auto-detect and switch to the workers.dev relay.
+
+  "websocket: bad handshake" from SSH
+    The edge-sync Worker may need redeployment. Re-run
+    bootstrap.sh --redeploy on the machine that has the config.
+
+  OTP email never arrives
+    Check spam. CF sends from noreply@notify.cloudflare.com.
+
+  Browser terminal not loading
+    This is a home machine issue, not a work machine issue.
+    Check ttyd and cloudflared on the home machine.
+
+EXAMPLES:
+  # Auto-detect (bootstrap was run on this machine):
+  ./installers/work_linux_mac.sh
+
+  # Manual host (bootstrap ran elsewhere):
+  ./installers/work_linux_mac.sh --ssh-host ssh.mydomain.com
 HELP
     exit 0
 }

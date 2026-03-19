@@ -23,23 +23,97 @@ DO_RESTART=false
 
 show_help() {
     cat <<'HELP'
-Usage:
-  ./home_linux_mac.sh                           (auto-reads from config)
-  ./home_linux_mac.sh --sudo                    (install as boot service)
-  ./home_linux_mac.sh --restart                 (restart existing service)
-  ./home_linux_mac.sh --token <TOKEN> [OPTIONS]
+erebus-edge — Home Machine Setup (Linux / macOS)
 
-Options:
+  Sets up the machine you connect INTO (your home server / Mac Mini).
+  Installs cloudflared tunnel + ttyd web terminal as system services.
+
+PREREQUISITES:
+  1. Run bootstrap.sh first (creates tunnel, DNS, Access policies).
+  2. If bootstrap ran on a different machine, copy the repo and the
+     ../erebus-temp/ folder to this machine before running.
+
+USAGE:
+  ./home_linux_mac.sh                           Interactive mode
+  ./home_linux_mac.sh --sudo                    Boot service (recommended)
+  ./home_linux_mac.sh --no-sudo                 Foreground / no admin
+  ./home_linux_mac.sh --restart                 Restart existing service
+  ./home_linux_mac.sh --token <TOKEN> [OPTIONS] Manual token
+
+OPTIONS:
   --token <TOKEN>       Cloudflare Tunnel token (from bootstrap output)
   --ca-key <KEY>        SSH CA public key for short-lived certificates
   --ssh-host <HOST>     Your SSH hostname (e.g. ssh.yourdomain.com)
   --sudo                Install as system service (auto-starts on boot)
-  --no-sudo             Run in user mode even if launched with sudo
+  --no-sudo             Run in foreground (no admin needed, stops on exit)
   --restart             Restart the existing cloudflared service
-  --help, -h            Show this help
+  -h, --help            Show this help
 
-If you ran bootstrap from this repo, just run with no arguments.
-The script auto-reads your config from portal_config.json.
+WHAT IT DOES (step by step):
+  1. Reads config from ../erebus-temp/keys/portal_config.json
+     (or accepts --token / --ssh-host flags)
+  2. Enables the SSH server if not already running
+  3. Downloads and installs cloudflared (tunnel agent)
+  4. Configures SSH CA trust for short-lived certificates
+  5. Starts the cloudflared tunnel as a system service
+  6. Installs and starts ttyd (web terminal on localhost:7681)
+
+MODES:
+  --sudo   (recommended)
+    Installs cloudflared + ttyd as boot services (launchd / systemd).
+    Survives reboots. Configures SSH CA trust automatically.
+
+  --no-sudo
+    Installs cloudflared to ~/.local/bin/ and runs in foreground.
+    Stops when the terminal closes. ttyd must be installed manually.
+    SSH CA trust commands are printed for you to run with sudo.
+
+AFTER RUNNING:
+  Your browser terminal URL is printed at the end. It looks like:
+    https://edge-sync.YOUR_SUBDOMAIN.workers.dev
+
+  Open that URL from your work machine — no setup needed on that end.
+  Log in with your home machine username and password.
+
+  For CLI SSH (requires cloudflared on the work machine):
+    ssh YOUR_USER@ssh.yourdomain.com
+
+TROUBLESHOOTING:
+  Browser terminal visible but can't type?
+    ttyd was started without -W (writable) flag. Restart it:
+      macOS:  sudo launchctl kickstart -k system/com.ttyd.terminal
+      Linux:  sudo systemctl restart ttyd
+
+  ttyd not responding at all?
+    Check if it's running: pgrep -fl ttyd
+    Check logs:
+      macOS:  cat /var/log/ttyd.log
+      Linux:  sudo journalctl -u ttyd -f
+
+  Tunnel not connecting?
+    Check service status:
+      macOS:  sudo launchctl list | grep cloudflare
+      Linux:  sudo systemctl status cloudflared
+    Check logs:
+      macOS:  cat /var/log/cloudflared/cloudflared.err
+      Linux:  sudo journalctl -u cloudflared -f
+    Common fix: re-run with --restart or reinstall with --sudo.
+
+  Token invalid or truncated?
+    Re-run bootstrap.sh --redeploy, then re-run this script.
+
+EXAMPLES:
+  # First run (bootstrap was run on this machine):
+  sudo ./installers/home_linux_mac.sh --sudo
+
+  # Quick test without admin:
+  ./installers/home_linux_mac.sh --no-sudo
+
+  # Manual token (bootstrap ran elsewhere):
+  sudo ./installers/home_linux_mac.sh --sudo --token "eyJ..."
+
+  # Restart after reboot issues:
+  sudo ./installers/home_linux_mac.sh --restart
 HELP
     exit 0
 }
