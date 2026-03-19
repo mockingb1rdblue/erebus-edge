@@ -57,7 +57,20 @@ This installs a LaunchDaemon so the tunnel survives reboots. Needs `sudo`.
 
 ---
 
-## Step 4: Install web terminal (ttyd)
+## Step 4: Verify web terminal
+
+The home installer automatically installs ttyd (the web terminal).
+Verify it's running:
+
+```bash
+curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7681
+# Should print: 200
+```
+
+If it's not running, see the troubleshooting section below, or install manually:
+
+<details>
+<summary><b>Manual ttyd installation</b></summary>
 
 ```bash
 brew install ttyd
@@ -65,11 +78,13 @@ sudo cp installers/com.ttyd.terminal.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.ttyd.terminal.plist
 ```
 
-Verify it's running:
+Verify:
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7681
 # Should print: 200
 ```
+
+</details>
 
 ---
 

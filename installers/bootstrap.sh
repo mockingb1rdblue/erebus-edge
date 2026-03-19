@@ -49,6 +49,10 @@ SSH_CA_KEY=""
 TEAM_NAME=""
 ZONE_ID=""
 DOMAIN=""
+APP_HOST=""
+SVC_TOKEN_ID=""
+SVC_TOKEN_SECRET=""
+EDGE_SYNC_URL=""
 TSNET_OK=false
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -943,6 +947,9 @@ print(z['id'] if z else '')")
     SSH_HOST="ssh.${DOMAIN}"
     ok "SSH hostname: $SSH_HOST"
 
+    APP_HOST="app.${DOMAIN}"
+    ok "App hostname: $APP_HOST"
+
     # Create DNS CNAME: ssh.domain -> TUNNEL_ID.cfargotunnel.com (proxied)
     local dns_r
     dns_r=$(cf_api GET "/zones/${ZONE_ID}/dns_records?type=CNAME&name=${SSH_HOST}")
@@ -971,6 +978,35 @@ print(rec['id'] if rec else '')")
             warn "DNS record creation failed: $(echo "$dns_result" | json_get 'errors')"
             warn "You may need to add DNS Edit permission to your API token."
             warn "Create it manually: CNAME  ssh  ->  ${cname_target}  (proxied/orange cloud)"
+        fi
+    fi
+
+    # Create DNS CNAME: app.domain -> TUNNEL_ID.cfargotunnel.com (proxied)
+    local app_dns_r
+    app_dns_r=$(cf_api GET "/zones/${ZONE_ID}/dns_records?type=CNAME&name=${APP_HOST}")
+    local existing_app_dns
+    existing_app_dns=$(echo "$app_dns_r" | json_py "
+recs = d.get('result',[])
+rec = next((r for r in recs if r.get('name')=='$APP_HOST'), None)
+print(rec['id'] if rec else '')")
+
+    if [ -n "$existing_app_dns" ]; then
+        # Update existing record to point to current tunnel
+        cf_api PUT "/zones/${ZONE_ID}/dns_records/${existing_app_dns}" \
+            "{\"type\":\"CNAME\",\"name\":\"app\",\"content\":\"${cname_target}\",\"proxied\":true}" >/dev/null
+        ok "DNS CNAME updated: $APP_HOST -> $cname_target (proxied)"
+    else
+        local app_dns_payload="{\"type\":\"CNAME\",\"name\":\"app\",\"content\":\"${cname_target}\",\"proxied\":true}"
+        local app_dns_result
+        app_dns_result=$(cf_api POST "/zones/${ZONE_ID}/dns_records" "$app_dns_payload")
+        local success
+        success=$(echo "$app_dns_result" | json_get "success")
+        if [ "$success" = "true" ]; then
+            ok "DNS CNAME created: $APP_HOST -> $cname_target (proxied)"
+        else
+            warn "DNS record creation failed: $(echo "$app_dns_result" | json_get 'errors')"
+            warn "You may need to add DNS Edit permission to your API token."
+            warn "Create it manually: CNAME  app  ->  ${cname_target}  (proxied/orange cloud)"
         fi
     fi
 }
@@ -1016,13 +1052,21 @@ print('yes' if ssh_rule and ssh_rule.get('originRequest',{}).get('access') else 
         ingress_json=$(python3 -c "
 import json
 rules = [
+    {'hostname': '$APP_HOST', 'service': 'http://localhost:7681'},
     {'hostname': '$SSH_HOST', 'service': 'ssh://localhost:22',
      'originRequest': {'access': {'required': True, 'teamName': '$cfg_team', 'audTag': ['$cfg_ssh_aud']}}},
     {'service': 'http_status:404'}
 ]
 print(json.dumps({'config': {'ingress': rules}}))")
     else
-        ingress_json='{"config":{"ingress":[{"hostname":"'"$SSH_HOST"'","service":"ssh://localhost:22"},{"service":"http_status:404"}]}}'
+        ingress_json=$(python3 -c "
+import json
+rules = [
+    {'hostname': '$APP_HOST', 'service': 'http://localhost:7681'},
+    {'hostname': '$SSH_HOST', 'service': 'ssh://localhost:22'},
+    {'service': 'http_status:404'}
+]
+print(json.dumps({'config': {'ingress': rules}}))")
     fi
 
     local r2
@@ -1030,6 +1074,7 @@ print(json.dumps({'config': {'ingress': rules}}))")
     local success
     success=$(echo "$r2" | json_get "success")
     if [ "$success" = "true" ]; then
+        ok "Ingress set: $APP_HOST -> http://localhost:7681"
         ok "Ingress set: $SSH_HOST -> ssh://localhost:22"
         [ -n "$cfg_ssh_aud" ] && ok "Access JWT validation enabled (team: $cfg_team)"
         ok "cloudflared on the home machine will pick this up automatically."
@@ -1309,6 +1354,36 @@ step_access() {
         fi
     fi
 
+    # Browser Terminal app (self_hosted, not ssh)
+    if [ -n "$APP_HOST" ]; then
+        local app_app_id
+        app_app_id=$(ensure_app "$APP_HOST" "Browser Terminal" "self_hosted" "24h")
+        if [ -n "$app_app_id" ]; then
+            ensure_policy "$app_app_id" "${emails[@]}"
+            # Add service token non_identity policy for Worker access
+            if [ -n "$SVC_TOKEN_ID" ]; then
+                local svc_r
+                svc_r=$(cf_api GET "/accounts/${ACCT_ID}/access/apps/${app_app_id}/policies")
+                local has_svc_policy
+                has_svc_policy=$(echo "$svc_r" | json_py "
+policies = d.get('result',[])
+print('yes' if any(p.get('name')=='Service Token Access' for p in policies) else 'no')")
+                if [ "$has_svc_policy" != "yes" ]; then
+                    printf "  Creating service token non_identity policy...\n"
+                    local svc_payload
+                    svc_payload="{\"name\":\"Service Token Access\",\"decision\":\"non_identity\",\"include\":[{\"service_token\":{\"token_id\":\"${SVC_TOKEN_ID}\"}}],\"require\":[],\"exclude\":[],\"precedence\":2}"
+                    local svc_result
+                    svc_result=$(cf_api POST "/accounts/${ACCT_ID}/access/apps/${app_app_id}/policies" "$svc_payload")
+                    local success
+                    success=$(echo "$svc_result" | json_get "success")
+                    [ "$success" = "true" ] && ok "Service token policy created." || warn "Could not create service token policy."
+                else
+                    ok "Service token policy already exists."
+                fi
+            fi
+        fi
+    fi
+
     ok "CF Access configured."
 }
 
@@ -1331,6 +1406,144 @@ step_ts_relay() {
     else
         printf "${R}FAILED${X}\n"
         warn "ts-relay deploy failed."
+    fi
+}
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Step 8 — Deploy edge-sync Worker (browser terminal + tunnel proxy)
+# ═══════════════════════════════════════════════════════════════════════════
+generate_edge_sync_worker_js() {
+    local app_host="$1" ssh_host="$2" svc_id="$3" svc_secret="$4"
+    cat << 'EDGESYNCEOF' | sed \
+        -e "s|__APP_HOST__|${app_host}|g" \
+        -e "s|__SSH_HOST__|${ssh_host}|g" \
+        -e "s|__SVC_TOKEN_ID__|${svc_id}|g" \
+        -e "s|__SVC_TOKEN_SECRET__|${svc_secret}|g"
+// edge-sync Worker — browser terminal + tunnel proxy
+const APP_HOST       = '__APP_HOST__';
+const SSH_HOST       = '__SSH_HOST__';
+const SVC_TOKEN_ID   = '__SVC_TOKEN_ID__';
+const SVC_TOKEN_SEC  = '__SVC_TOKEN_SECRET__';
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    const ua  = (request.headers.get('User-Agent') || '');
+    const isCloudflareDaemon = ua.includes('cloudflared') || ua.includes('Go-http-client');
+
+    // Route cloudflared requests to SSH tunnel
+    const targetHost = isCloudflareDaemon ? SSH_HOST : APP_HOST;
+    const dest = new URL(request.url);
+    dest.hostname = targetHost;
+    dest.port = '';
+    dest.protocol = 'https:';
+
+    const headers = new Headers(request.headers);
+    headers.set('Host', targetHost);
+    headers.set('CF-Access-Client-Id', SVC_TOKEN_ID);
+    headers.set('CF-Access-Client-Secret', SVC_TOKEN_SEC);
+
+    const resp = await fetch(dest.toString(), {
+      method:  request.method,
+      headers,
+      body:    ['GET', 'HEAD'].includes(request.method) ? undefined : request.body,
+      redirect: 'manual',
+    });
+
+    // Pass WebSocket upgrades through directly
+    if (resp.webSocket) return resp;
+
+    // Rewrite redirects to stay on the Worker domain
+    if ([301, 302, 303, 307, 308].includes(resp.status)) {
+      const loc = resp.headers.get('Location');
+      if (loc) {
+        const locUrl = new URL(loc, dest.toString());
+        if (locUrl.hostname === targetHost) {
+          locUrl.hostname = url.hostname;
+          locUrl.protocol = url.protocol;
+          const newHeaders = new Headers(resp.headers);
+          newHeaders.set('Location', locUrl.toString());
+          return new Response(resp.body, {
+            status: resp.status,
+            statusText: resp.statusText,
+            headers: newHeaders,
+          });
+        }
+      }
+    }
+
+    // Rewrite HTML title
+    const ct = (resp.headers.get('Content-Type') || '');
+    if (ct.includes('text/html')) {
+      let body = await resp.text();
+      body = body.replace(/ttyd - Terminal/g, 'Edge Sync - Dashboard');
+      const newHeaders = new Headers(resp.headers);
+      newHeaders.delete('Content-Length');
+      return new Response(body, {
+        status: resp.status,
+        statusText: resp.statusText,
+        headers: newHeaders,
+      });
+    }
+
+    return resp;
+  },
+};
+EDGESYNCEOF
+}
+
+step_edge_sync() {
+    hdr "Step 8: Deploy edge-sync Worker (browser terminal proxy)"
+
+    # ── Create CF Access service token ────────────────────────────────
+    printf "  Checking for existing service token...\n"
+    local r
+    r=$(cf_api GET "/accounts/${ACCT_ID}/access/service_tokens")
+    local existing_token
+    existing_token=$(echo "$r" | json_py "
+st = next((t for t in d.get('result',[]) if t.get('name')=='edge-sync-worker'), None)
+print(st['client_id'] if st else '')")
+
+    if [ -n "$existing_token" ]; then
+        SVC_TOKEN_ID="$existing_token"
+        ok "Service token 'edge-sync-worker' already exists (client_id: ${SVC_TOKEN_ID:0:8}...)"
+        # Try to load secret from config (CF only returns it on creation)
+        if [ -z "$SVC_TOKEN_SECRET" ]; then
+            SVC_TOKEN_SECRET=$(config_val "service_token_secret")
+        fi
+        if [ -z "$SVC_TOKEN_SECRET" ]; then
+            warn "Service token secret not in config -- cannot update. Delete and re-create if needed."
+        fi
+    else
+        printf "  Creating service token 'edge-sync-worker'...\n"
+        local st_payload='{"name":"edge-sync-worker","duration":"8760h"}'
+        local st_resp
+        st_resp=$(cf_api POST "/accounts/${ACCT_ID}/access/service_tokens" "$st_payload")
+        local success
+        success=$(echo "$st_resp" | json_get "success")
+        if [ "$success" = "true" ]; then
+            SVC_TOKEN_ID=$(echo "$st_resp" | json_get "result.client_id")
+            SVC_TOKEN_SECRET=$(echo "$st_resp" | json_get "result.client_secret")
+            ok "Service token created (client_id: ${SVC_TOKEN_ID:0:8}...)"
+        else
+            warn "Service token creation failed: $(echo "$st_resp" | json_get 'errors')"
+            warn "edge-sync Worker will not have service token auth."
+        fi
+    fi
+
+    # ── Generate and deploy Worker ────────────────────────────────────
+    local js
+    js=$(generate_edge_sync_worker_js "$APP_HOST" "$SSH_HOST" "$SVC_TOKEN_ID" "$SVC_TOKEN_SECRET")
+
+    printf "  Deploying 'edge-sync' Worker ... "
+    EDGE_SYNC_URL="https://edge-sync.${SUBDOMAIN}.workers.dev"
+    if deploy_worker "$ACCT_ID" "edge-sync" "$js"; then
+        printf "${G}OK${X}  ->  ${EDGE_SYNC_URL}\n"
+        ok "Browser terminal proxied through workers.dev"
+        save_config "{\"edge_sync_url\":\"${EDGE_SYNC_URL}\",\"service_token_id\":\"${SVC_TOKEN_ID}\",\"service_token_secret\":\"${SVC_TOKEN_SECRET}\"}"
+    else
+        printf "${R}FAILED${X}\n"
+        warn "edge-sync deploy failed."
     fi
 }
 
@@ -1514,11 +1727,18 @@ cfg = {
     'subdomain':  '$SUBDOMAIN',
     'tunnel_id':  '$TUNNEL_ID',
     'ssh_host':   '$SSH_HOST',
+    'app_host':   '$APP_HOST',
     'domain':     '$DOMAIN',
     'zone_id':    '$ZONE_ID',
 }
 if '$TUNNEL_TOKEN':
     cfg['tunnel_token'] = '$TUNNEL_TOKEN'
+if '$EDGE_SYNC_URL':
+    cfg['edge_sync_url'] = '$EDGE_SYNC_URL'
+if '$SVC_TOKEN_ID':
+    cfg['service_token_id'] = '$SVC_TOKEN_ID'
+if '$SVC_TOKEN_SECRET':
+    cfg['service_token_secret'] = '$SVC_TOKEN_SECRET'
 print(json.dumps(cfg))")
 
     save_config "$cfg_json"
@@ -1554,8 +1774,16 @@ print_summary() {
     printf "\n%s\n" "$(printf '═%.0s' $(seq 1 58))"
     printf "  ${G}${B}Bootstrap complete!${X}\n"
     printf "%s\n" "$(printf '═%.0s' $(seq 1 58))"
+    local edge_sync_url
+    edge_sync_url=$(config_val "edge_sync_url")
+    [ -z "$edge_sync_url" ] && [ -n "$EDGE_SYNC_URL" ] && edge_sync_url="$EDGE_SYNC_URL"
+
     printf "\n  Your endpoints:\n"
     printf "    Browser SSH : ${C}https://${SSH_HOST}${X}\n"
+    if [ -n "$edge_sync_url" ]; then
+        printf "    ${G}${B}Browser Terminal : ${C}${edge_sync_url}${X}\n"
+        printf "    ${D}(open from your work machine -- no setup needed)${X}\n"
+    fi
     if [ -n "$team_name" ]; then
         printf "    App Launcher: ${C}https://${team_name}.cloudflareaccess.com${X}\n"
     fi
@@ -1738,9 +1966,11 @@ main() {
 
         step_auth
         [ -n "$ARG_DOMAIN" ] && DOMAIN="$ARG_DOMAIN"
+        APP_HOST=$(config_val "app_host")
         step_domain
         step_ingress
         step_ts_relay
+        step_edge_sync
         if [ "$ARG_SKIP_TSNET" != "true" ]; then
             step_build_tsnet && TSNET_OK=true
         fi
@@ -1764,6 +1994,9 @@ main() {
 
     # ts-relay Worker (still on workers.dev -- works fine for Tailscale)
     step_ts_relay
+
+    # edge-sync Worker (browser terminal proxy through workers.dev)
+    step_edge_sync
 
     # CF Access: collect emails
     local -a emails=("${ARG_EMAILS[@]}")

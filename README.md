@@ -100,6 +100,7 @@ to your home machine first.
 **What it does:**
 - Enables the SSH server (if not already on)
 - Installs Cloudflare's tunnel agent (`cloudflared`)
+- Installs and starts ttyd (the web terminal) automatically
 - Starts the tunnel as a system service (survives reboots)
 
 Pass `--sudo` to skip the interactive prompt and install as a boot service directly.
@@ -156,6 +157,9 @@ https://edge-sync.YOUR_SUBDOMAIN.workers.dev
 ```
 
 You'll get a terminal. Log in with your home machine username and password.
+
+> The browser terminal URL is printed at the end of bootstrap and the home installer.
+> It looks like `https://edge-sync.YOUR_SUBDOMAIN.workers.dev`.
 
 > **Why this is the best option for corporate networks:**
 > - No software to install on the work machine
@@ -219,11 +223,14 @@ docs/
 
 ---
 
-## Advanced: Web terminal setup (ttyd)
+<details>
+<summary><b>Manual ttyd setup (if automatic installation failed)</b></summary>
+
+The home installer (`home_linux_mac.sh --sudo`) automatically installs and
+configures ttyd. If that failed, you can set it up manually.
 
 The browser terminal uses [ttyd](https://github.com/tsl0922/ttyd), a lightweight
-tool that serves a shell over HTTP/WebSocket. Bootstrap sets up the SSH tunnel,
-but the web terminal requires an extra step on the home machine.
+tool that serves a shell over HTTP/WebSocket.
 
 ### Install ttyd
 
@@ -291,6 +298,8 @@ endpoint and CLI requests to the SSH tunnel.
 </dict>
 </plist>
 ```
+</details>
+
 </details>
 
 ---

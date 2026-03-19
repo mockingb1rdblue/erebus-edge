@@ -6,7 +6,7 @@
     <string>com.ttyd.terminal</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/opt/homebrew/bin/ttyd</string>
+        <string>__TTYD_BIN__</string>
         <string>-W</string>
         <string>-p</string>
         <string>7681</string>

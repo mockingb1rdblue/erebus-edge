@@ -100,6 +100,21 @@ if not "%_CFG_FILE%"=="" (
             )
         )
     )
+    REM Read edge_sync_url for browser terminal
+    set "EDGE_SYNC_URL="
+    if "%EDGE_SYNC_URL%"=="" (
+        for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).edge_sync_url" 2^>nul`) do (
+            set "EDGE_SYNC_URL=%%v"
+        )
+        if "!EDGE_SYNC_URL!"=="" (
+            for /f "tokens=2 delims=:," %%v in ('findstr /C:"edge_sync_url" "%_CFG_FILE%" 2^>nul') do (
+                set "_RAW=%%v"
+                set "_RAW=!_RAW: =!"
+                set "_RAW=!_RAW:"=!"
+                set "EDGE_SYNC_URL=!_RAW!"
+            )
+        )
+    )
     REM Read service token credentials for relay auth
     if "%SVC_ID%"=="" (
         for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "(Get-Content '%_CFG_FILE%' | ConvertFrom-Json).service_token_id" 2^>nun`) do (
@@ -340,9 +355,18 @@ if "%PROXY_HOST%"=="%TARGET_HOST%" (
     echo   Relay: %PROXY_HOST%
 )
 echo.
-echo   Connect to your home machine:
-echo     Browser : https://%PROXY_HOST%  (opens terminal in browser)
-echo     CLI     : ssh YOUR_USER@%TARGET_HOST%
-echo     Script  : %CONNECT%
+if not "!EDGE_SYNC_URL!"=="" (
+    echo   BROWSER TERMINAL (recommended -- no setup needed):
+    echo     !EDGE_SYNC_URL!
+    echo     Just open this URL in Chrome or Edge. That's it.
+    echo.
+    echo   CLI (requires cloudflared on your machine):
+    echo     ssh YOUR_USER@%TARGET_HOST%
+    echo     Script: %CONNECT%
+) else (
+    echo   Connect to your home machine:
+    echo     CLI     : ssh YOUR_USER@%TARGET_HOST%
+    echo     Script  : %CONNECT%
+)
 echo.
 endlocal

@@ -379,6 +379,16 @@ if ! $USE_SUDO; then
     info ""
     info "Want it to survive reboots? Re-run with --sudo to install as a service."
     echo ""
+    info "ttyd (web terminal) not installed in no-sudo mode."
+    info "To install manually:"
+    if $IS_MAC; then
+        echo "    brew install ttyd"
+        echo "    ttyd -W -p 7681 -i 127.0.0.1 /bin/zsh"
+    else
+        echo "    sudo apt-get install -y ttyd   # or download from GitHub"
+        echo "    ttyd -W -p 7681 -i 127.0.0.1 /bin/bash"
+    fi
+    echo ""
     cloudflared tunnel run --token "$TOKEN"
     info "cloudflared tunnel stopped."
     exit 0
@@ -489,6 +499,148 @@ else
     fi
 fi
 
+# ── 6. Install and configure ttyd (web terminal) ─────────────────
+info "Setting up ttyd (web terminal)..."
+
+_TTYD_BIN=""
+if command -v ttyd &>/dev/null; then
+    _TTYD_BIN=$(command -v ttyd)
+    ok "ttyd already installed ($_TTYD_BIN)"
+else
+    info "Installing ttyd..."
+    ARCH=$(uname -m)
+    if $IS_MAC; then
+        if command -v brew &>/dev/null; then
+            info "Installing ttyd via brew..."
+            HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 \
+                brew install ttyd >/dev/null 2>&1 \
+                && ok "Installed ttyd via brew" || true
+        fi
+        if ! command -v ttyd &>/dev/null; then
+            case "$ARCH" in
+                x86_64)        _TTYD_ARCH="x86_64" ;;
+                aarch64|arm64) _TTYD_ARCH="aarch64" ;;
+                *)             err "Unknown arch for ttyd: $ARCH" ;;
+            esac
+            if [[ -n "${_TTYD_ARCH:-}" ]]; then
+                sudo curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${_TTYD_ARCH}" \
+                    -o /usr/local/bin/ttyd
+                sudo chmod +x /usr/local/bin/ttyd
+                ok "ttyd binary installed to /usr/local/bin/"
+            fi
+        fi
+    else
+        if command -v apt-get &>/dev/null; then
+            sudo apt-get install -y ttyd 2>/dev/null && ok "Installed ttyd via apt" || true
+        fi
+        if ! command -v ttyd &>/dev/null; then
+            case "$ARCH" in
+                x86_64)        _TTYD_ARCH="x86_64" ;;
+                aarch64|arm64) _TTYD_ARCH="aarch64" ;;
+                *)             err "Unknown arch for ttyd: $ARCH" ;;
+            esac
+            if [[ -n "${_TTYD_ARCH:-}" ]]; then
+                sudo curl -fsSL "https://github.com/tsl0922/ttyd/releases/latest/download/ttyd.${_TTYD_ARCH}" \
+                    -o /usr/local/bin/ttyd
+                sudo chmod +x /usr/local/bin/ttyd
+                ok "ttyd binary installed to /usr/local/bin/"
+            fi
+        fi
+    fi
+    # Re-detect after install
+    command -v ttyd &>/dev/null && _TTYD_BIN=$(command -v ttyd)
+fi
+
+if [[ -n "$_TTYD_BIN" ]]; then
+    info "Installing ttyd as system service..."
+
+    if $IS_MAC; then
+        _TTYD_PLIST="/Library/LaunchDaemons/com.ttyd.terminal.plist"
+        _TTYD_PLIST_SRC="$_SCRIPT_DIR/com.ttyd.terminal.plist"
+
+        # Stop existing service
+        sudo launchctl unload "$_TTYD_PLIST" 2>/dev/null || true
+
+        if [[ -f "$_TTYD_PLIST_SRC" ]]; then
+            # Copy from repo and replace placeholder with detected path
+            sudo cp "$_TTYD_PLIST_SRC" "$_TTYD_PLIST"
+            sudo sed -i '' "s|__TTYD_BIN__|${_TTYD_BIN}|g" "$_TTYD_PLIST"
+        else
+            # Generate plist inline
+            sudo tee "$_TTYD_PLIST" >/dev/null <<TTYD_PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ttyd.terminal</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>${_TTYD_BIN}</string>
+        <string>-W</string>
+        <string>-p</string>
+        <string>7681</string>
+        <string>-i</string>
+        <string>127.0.0.1</string>
+        <string>/bin/zsh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/ttyd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/ttyd.log</string>
+</dict>
+</plist>
+TTYD_PLIST
+        fi
+
+        sudo launchctl load "$_TTYD_PLIST"
+        ok "ttyd service installed (starts on boot + started now)"
+        ok "Logs: /var/log/ttyd.log"
+    else
+        # Linux: create systemd unit
+        sudo tee /etc/systemd/system/ttyd.service >/dev/null <<TTYD_UNIT
+[Unit]
+Description=ttyd - web terminal
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=${_TTYD_BIN} -W -p 7681 -i 127.0.0.1 /bin/bash
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+TTYD_UNIT
+
+        sudo systemctl daemon-reload
+        sudo systemctl enable ttyd
+        sudo systemctl restart ttyd
+        ok "ttyd service installed (starts on boot + started now)"
+    fi
+
+    # Verify ttyd is running
+    info "Verifying ttyd is responding..."
+    sleep 2
+    _ttyd_status=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:7681 2>/dev/null || echo "000")
+    if [[ "$_ttyd_status" == "200" ]]; then
+        ok "ttyd is running on http://127.0.0.1:7681"
+    else
+        err "ttyd not responding (HTTP $_ttyd_status). Check logs:"
+        if $IS_MAC; then
+            echo "    cat /var/log/ttyd.log"
+        else
+            echo "    sudo journalctl -u ttyd -f"
+        fi
+    fi
+else
+    err "ttyd could not be installed. Install manually and re-run."
+fi
+
 if $_tunnel_ok; then
     ok "cloudflared is running"
     echo ""
@@ -502,6 +654,16 @@ if $_tunnel_ok; then
         echo "  Connect from your work machine:"
         echo "    Browser : https://$SSH_HOST  (email OTP login)"
         echo "    CLI     : ssh YOUR_USER@$SSH_HOST"
+    fi
+    # Display browser terminal URL from portal_config.json
+    _EDGE_SYNC_URL=""
+    if [[ -n "$_CFG_FILE" ]]; then
+        _EDGE_SYNC_URL=$(_json_val edge_sync_url)
+    fi
+    if [[ -n "$_EDGE_SYNC_URL" ]]; then
+        echo ""
+        echo "  Browser terminal: $_EDGE_SYNC_URL"
+        echo "    (open from your work machine — no setup needed)"
     fi
     echo ""
     echo "  Service management:"
