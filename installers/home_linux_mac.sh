@@ -457,7 +457,7 @@ if ! $USE_SUDO; then
     info "To install manually:"
     if $IS_MAC; then
         echo "    brew install ttyd"
-        echo "    ttyd -W -p 7681 -i 127.0.0.1 /bin/zsh"
+        echo "    ttyd -W -p 7681 -i 127.0.0.1 login"
     else
         echo "    sudo apt-get install -y ttyd   # or download from GitHub"
         echo "    ttyd -W -p 7681 -i 127.0.0.1 /bin/bash"
@@ -656,7 +656,7 @@ if [[ -n "$_TTYD_BIN" ]]; then
         <string>7681</string>
         <string>-i</string>
         <string>127.0.0.1</string>
-        <string>/bin/zsh</string>
+        <string>login</string>
     </array>
     <key>RunAtLoad</key>
     <true/>

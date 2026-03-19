@@ -12,7 +12,7 @@
         <string>7681</string>
         <string>-i</string>
         <string>127.0.0.1</string>
-        <string>/bin/zsh</string>
+        <string>login</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
