@@ -1,53 +1,51 @@
 # erebus-edge
 
-SSH into your home machine from a locked-down corporate network.
-No admin, no VPN, no IT ticket.
+Access your home machine from a locked-down corporate network.
+No admin privileges. No VPN. No IT ticket.
+
+## What this does
+
+You run a few scripts. After that, you open a URL in your work browser and get a
+terminal on your home machine. Everything goes through Cloudflare's network over
+standard HTTPS — it looks like normal web browsing to your corporate firewall.
 
 ```
-Work machine (no admin, corporate proxy)
-  |
-  |--> Browser --> ssh.yourdomain.com --> CF Access (email OTP)
-  |     --> CF browser-rendered SSH terminal
-  |     --> Short-lived SSH certificates (no static keys)
-  |
-  |--> CLI SSH --> cloudflared ProxyCommand --> CF Tunnel --> home SSH
-  |
-  `--> tsnet (userspace Tailscale, no admin)
-        --> any Tailscale peer via DERP relay
+Your work laptop                     Cloudflare                    Your home machine
+  |                                                                       |
+  |-- Chrome ──► workers.dev ──► CF edge ──► CF Tunnel ──► web terminal ──|
+  |   (HTTPS)    (looks normal)   (encrypted)  (persistent)   (ttyd)      |
+  |                                                                       |
+  `-- or: ssh ──► cloudflared ──► workers.dev ──► CF Tunnel ──► sshd ────-'
+      (optional CLI path, needs cloudflared installed)
 ```
 
-**How it works:** Cloudflare Tunnel creates a persistent connection from your home
-machine to CF's edge. A DNS CNAME (`ssh.yourdomain.com`) routes traffic through
-CF Access (email OTP authentication) to the tunnel, which forwards to your local
-SSH server. No port forwarding, no dynamic DNS, no static IP needed.
+**Two ways to connect:**
+1. **Browser** (recommended) — just open a URL. No installs on the work machine.
+2. **CLI SSH** — traditional `ssh` command, routed through Cloudflare. Needs a small binary.
 
-Every user deploys their **own** instance to their **own** Cloudflare account.
-Share the repo/zip -- not the URL.
+**Each person deploys their own instance** to their own Cloudflare account.
+Share the repo — not the URL.
 
 ---
 
-## Prerequisites
+## What you need before starting
 
-1. A **free** [Cloudflare account](https://dash.cloudflare.com/sign-up)
-2. A **domain on Cloudflare** -- either:
-   - Buy one through [CF Registrar](https://dash.cloudflare.com/?to=/:account/domains/register) (~$1/yr for .xyz)
-   - Or add your own domain and point its nameservers to Cloudflare
+1. A **free** [Cloudflare account](https://dash.cloudflare.com/sign-up) (no credit card)
+2. A **domain on Cloudflare** — either:
+   - Buy one through [CF Registrar](https://dash.cloudflare.com/?to=/:account/domains/register) (~$1/yr for `.xyz`)
+   - Or add an existing domain and point its nameservers to Cloudflare
+3. A **home machine** that stays on (Mac, Linux, or Windows)
+4. **10 minutes**
 
-That's it. No paid plan, no credit card required for basic setup.
-
-The bootstrap wizard walks you through everything, including:
-- Creating a CF API token (opens the dashboard with step-by-step instructions)
-- Enabling Zero Trust (free plan, $0 charge)
-- Setting up DNS, tunnel, and access policies
-
-**Optional:** A [Tailscale account](https://login.tailscale.com/start) if you
-want peer-to-peer connectivity (Option C below). Not needed for SSH.
+The bootstrap wizard walks you through everything — including creating the API
+token, enabling Zero Trust (free), and setting up DNS. You don't need to
+understand Cloudflare to use this.
 
 ---
 
-## Quick start (from scratch)
+## Setup (3 steps)
 
-### 1. Clone and run bootstrap
+### Step 1: Bootstrap (run once, on any machine)
 
 ```bash
 git clone https://github.com/YOUR_USER/erebus-edge.git
@@ -60,173 +58,291 @@ cd erebus-edge
 installers\bootstrap.bat --email you@example.com
 ```
 
-The wizard will:
-1. Open your browser to the CF Dashboard to create an API token
-2. Print step-by-step instructions (which buttons to click, which permissions)
-3. If Zero Trust isn't enabled, walk you through the free enrollment
-4. Pick your domain (or guide you to register one)
-5. Create everything automatically once you paste the token
+The `--email` is the address you'll use to log in (Cloudflare sends a one-time code).
 
-Automatically sets up:
-
-- Creates a scoped API token + CF Tunnel
-- Creates DNS CNAME (`ssh.yourdomain.com` -> tunnel)
-- Sets up CF Zero Trust Access (email OTP + browser SSH + short-lived certs)
-- Deploys the Tailscale relay Worker (`ts-relay.SUB.workers.dev`)
-- Optionally builds a `tsnet` binary (userspace Tailscale)
-
-All artifacts go to `../erebus-temp/` -- the repo stays clean.
+**What happens:**
+- Opens your browser to create a Cloudflare API token (with step-by-step instructions)
+- Creates a tunnel, DNS record, and access policies automatically
+- Saves all config to `../erebus-temp/` (outside the repo, never committed)
 
 <details>
-<summary>Bootstrap flags</summary>
+<summary><b>All bootstrap flags</b> (for power users)</summary>
 
 | Flag | Purpose |
 |------|---------|
-| `--email EMAIL` | Email(s) to allow through CF Access (repeatable) |
-| `--domain DOMAIN` | Domain to use (auto-selects if omitted) |
-| `--cf-token TOKEN` | Pass CF API token directly (skip browser flow) |
-| `--save-token` | Save token to Keychain/DPAPI/file |
-| `--redeploy` | Re-run DNS + ingress + Access with existing config |
-| `--build-tsnet` | Only rebuild tsnet binary |
-| `--skip-tsnet` | Skip Go download + tsnet build |
-| `--skip-access` | Skip CF Zero Trust Access setup |
+| `--email EMAIL` | Email(s) for access (repeatable). Required. |
+| `--domain DOMAIN` | Domain to use. Auto-selects if omitted. |
+| `--cf-token TOKEN` | Provide API token directly (skip browser flow). |
+| `--save-token` | Save token to macOS Keychain / Linux file / Windows DPAPI. |
+| `--redeploy` | Re-run DNS + tunnel config with existing settings. |
+| `--skip-access` | Skip Zero Trust Access setup. |
+| `--skip-tsnet` | Skip optional Tailscale component. |
 
+Fully automated example (no browser):
+```bash
+./bootstrap.sh --cf-token "YOUR_TOKEN" --save-token \
+  --email you@example.com --domain yourdomain.com --skip-tsnet
+```
 </details>
 
-### 2. Set up your home machine
+### Step 2: Set up your home machine
 
-If you ran bootstrap on the same machine, just run:
+On the machine you want to connect TO:
 
 ```bash
-# macOS / Linux -- auto-reads token from ../erebus-temp/
-./installers/home_linux_mac.sh
-
-# Windows -- auto-reads token from ..\erebus-temp\
-installers\home_windows.bat
+./installers/home_linux_mac.sh        # Mac or Linux
+installers\home_windows.bat           # Windows
 ```
 
-If your home machine is a **different box**, copy the repo there (or just
-`installers/` + `../erebus-temp/`) and run the same command.
+If bootstrap ran on a different machine, copy the repo + `../erebus-temp/` folder
+to your home machine first.
 
-The script asks whether you want **Quick start** (no sudo, foreground tunnel)
-or **Boot service** (sudo/admin, auto-starts on boot). Pass `--sudo` /
-`--no-sudo` (or `--admin` / `--no-admin` on Windows) to skip the prompt.
+**What it does:**
+- Enables the SSH server (if not already on)
+- Installs Cloudflare's tunnel agent (`cloudflared`)
+- Starts the tunnel as a system service (survives reboots)
 
-### 3. Set up your work machine
+Pass `--sudo` to skip the interactive prompt and install as a boot service directly.
 
+### Step 3: Set up your work machine
+
+On the machine you connect FROM (your corporate laptop):
+
+**Windows:**
+```cmd
+installers\work_windows.bat --host ssh.yourdomain.com
+```
+
+**Mac / Linux:**
 ```bash
-# macOS / Linux -- auto-reads SSH host from config
 ./installers/work_linux_mac.sh
-
-# Windows (no admin needed) -- auto-reads from config
-installers\work_windows.bat
 ```
 
-Or pass the host directly: `--ssh-host ssh.yourdomain.com`
+**What it does:**
+- Downloads `cloudflared` to your user directory (no admin needed)
+- Tests if your corporate network can resolve the custom domain
+- If DNS is blocked: auto-detects and routes through a `workers.dev` relay
+- Creates an SSH config entry so `ssh` just works
 
-Windows `.bat` files work even when GPO blocks PowerShell.
-No secrets in the installer files -- tokens are passed as arguments at run time.
+<details>
+<summary><b>Corporate DNS blocked?</b> (the script handles this automatically)</summary>
+
+Many corporate networks block DNS resolution for unknown domains. The work
+installer detects this automatically:
+
+1. Probes DNS for your custom domain
+2. If it fails, looks for a `workers.dev` relay (deployed by bootstrap)
+3. Routes all traffic through `workers.dev` instead — which corporate DNS allows
+
+You can also pass the relay explicitly:
+```cmd
+work_windows.bat --host ssh.yourdomain.com --relay edge-sync.XXXX.workers.dev
+```
+
+For relay authentication (service token), pass `--id` and `--secret` or add
+`service_token_id` and `service_token_secret` to your `portal_config.json`.
+</details>
 
 ---
 
 ## Daily use
 
-### Option A -- Browser SSH (CF Access)
+### Browser terminal (recommended)
 
-Visit `https://ssh.yourdomain.com` in your browser.
+Open this URL in any browser:
 
-1. Authenticate via email OTP
-2. Browser-rendered SSH terminal opens automatically
-3. CF generates a short-lived certificate for your session -- no SSH keys needed
-
-You can also use the App Launcher at `https://TEAM.cloudflareaccess.com` to
-see all your CF Access apps and launch SSH from there.
-
-### Option B -- CLI SSH (CF Tunnel)
-
-```bash
-src/connect.sh      # Git Bash / Mac / Linux
-src\connect.bat     # Windows cmd
+```
+https://edge-sync.YOUR_SUBDOMAIN.workers.dev
 ```
 
-Or directly: `ssh YOUR_USER@ssh.yourdomain.com`
-(requires cloudflared installed -- the work installer handles this)
+You'll get a terminal. Log in with your home machine username and password.
 
-### Option C -- Tailscale (tsnet)
+> **Why this is the best option for corporate networks:**
+> - No software to install on the work machine
+> - No `ssh` command, no PowerShell
+> - Looks like a normal web page to your IT department
+> - Works on any device with a browser (phone, tablet, Chromebook)
 
-Connect to any peer on your Tailscale network:
+### CLI SSH
 
 ```bash
-tsnet up              # connect + auth
-tsnet status          # list peers
-ssh -o "ProxyCommand=tsnet proxy %h %p" user@peer
+ssh YOUR_USER@ssh.yourdomain.com
 ```
 
-> **Note:** tsnet requires `controlplane.tailscale.com` to be reachable.
-> The ts-relay Worker proxies this through `workers.dev` to bypass DPI,
-> but some networks may still block it. Use Options A/B as the reliable fallback.
+Requires `cloudflared` installed (Step 3 handles this). On corporate networks
+where DNS is blocked, the SSH config routes through the `workers.dev` relay
+automatically.
+
+---
+
+## What your corporate security sees
+
+| Layer | What they see | Suspicious? |
+|-------|--------------|-------------|
+| DNS lookup | `edge-sync.XXXX.workers.dev` | No — standard Cloudflare dev domain |
+| Network traffic | HTTPS to Cloudflare IP on port 443 | No — same as any website |
+| Browser tab | "Edge Sync - Dashboard" | No — looks like a dev tool |
+| EDR/endpoint | Chrome making HTTPS request | No — normal browsing |
+| Process list | Only Chrome | No — no extra binaries |
+
+**What they cannot see:** The terminal content, your keystrokes, the destination,
+or that it's a shell session. Everything is encrypted end-to-end.
 
 ---
 
 ## Project structure
 
 ```
-README.md / LICENSE         You are here
+README.md                       This file
+LICENSE                         MIT
 
-installers/                 Standalone installers (no Python, no secrets)
-  bootstrap.sh                Bootstrap wizard (macOS/Linux)
-  bootstrap.bat               Bootstrap wizard (Windows)
-  home_linux_mac.sh           Home machine setup (Linux/Mac)
-  home_windows.bat            Home machine setup (Windows)
-  work_linux_mac.sh           Work machine setup (Linux/Mac)
-  work_windows.bat            Work machine setup (Windows)
+installers/                     Self-contained scripts (no Python needed)
+  bootstrap.sh / .bat             First-run wizard
+  home_linux_mac.sh / .bat        Home machine setup
+  work_linux_mac.sh / .bat        Work machine setup
 
-src/                        Python reference implementation (legacy)
-  bootstrap.py                Original Python bootstrap wizard
-  connect.bat / connect.sh    CLI SSH connect scripts
-  cf_creds.py                 DPAPI credential store (Windows)
-  config.py                   Config loader
-  setup_cf_access.py          CF Zero Trust Access setup
-  deploy_ts_relay_worker.py   Tailscale relay Worker deploy
+src/                            Reference implementations (Python, legacy)
+  bootstrap.py                    Original Python wizard
+  connect.sh / .bat               CLI connect helpers
+  deploy_ts_relay_worker.py       Worker deployment
 
-tsnet/                      Go source for userspace Tailscale (optional)
-  main.go
-  go.mod
+tsnet/                          Optional: userspace Tailscale (Go)
+  main.go / go.mod
 
-../erebus-temp/             Created by bootstrap (gitignored, outside repo)
-  keys/
-    portal_config.json        Account IDs, domain, tunnel ID, etc.
-  bin/
-    cloudflared               Downloaded if not in PATH
-    tsnet                     Built from source (optional)
-  cf_config.txt               Saved SSH settings
+docs/
+  BUILD_NOTES.md                Architecture decisions & CF API patterns
+
+../erebus-temp/                 Created by bootstrap (outside repo, gitignored)
+  keys/portal_config.json        Your account config (tokens, IDs, domain)
+  bin/                           Downloaded binaries
 ```
 
 ---
 
-## Security
+## Advanced: Web terminal setup (ttyd)
 
-- **No static SSH keys** -- CF generates short-lived certificates per session
-- **Email OTP gate** -- CF Access requires identity verification before SSH
-- **Origin-side JWT validation** -- cloudflared validates Access JWT on the home machine
-- **Per-platform credential storage** -- macOS Keychain, Linux file (0600), Windows DPAPI
-- **No admin required** -- everything runs in userspace on the work machine
-- **No secrets in repo** -- all artifacts go to `../erebus-temp/` (outside the repo)
-- **Scoped API tokens** -- bootstrap creates tokens with only the required permissions
-- **DNS-routed via CF proxy** -- traffic goes through CF's edge, never exposes your home IP
+The browser terminal uses [ttyd](https://github.com/tsl0922/ttyd), a lightweight
+tool that serves a shell over HTTP/WebSocket. Bootstrap sets up the SSH tunnel,
+but the web terminal requires an extra step on the home machine.
+
+### Install ttyd
+
+**macOS:**
+```bash
+brew install ttyd
+```
+
+**Linux (Debian/Ubuntu):**
+```bash
+sudo apt install ttyd
+```
+
+### Run it
+
+```bash
+# Quick test (foreground)
+ttyd -W -p 7681 -i 127.0.0.1 /bin/zsh
+
+# As a service (macOS LaunchDaemon)
+sudo cp installers/com.ttyd.terminal.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.ttyd.terminal.plist
+```
+
+**Important flags:**
+- `-W` — **required** — enables write mode (without this, you can see output but can't type)
+- `-i 127.0.0.1` — bind to localhost only (the tunnel handles external access)
+- `-p 7681` — port (must match the tunnel ingress)
+
+### Add to the tunnel
+
+Add an ingress rule in your Cloudflare tunnel config pointing a hostname to
+`http://localhost:7681`. The `edge-sync` Worker proxies browser requests to this
+endpoint and CLI requests to the SSH tunnel.
+
+<details>
+<summary><b>ttyd LaunchDaemon plist</b></summary>
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.ttyd.terminal</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/ttyd</string>
+        <string>-W</string>
+        <string>-p</string>
+        <string>7681</string>
+        <string>-i</string>
+        <string>127.0.0.1</string>
+        <string>/bin/zsh</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/var/log/ttyd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/ttyd.log</string>
+</dict>
+</plist>
+```
+</details>
+
+---
+
+## Security model
+
+- **No static SSH keys** — Cloudflare generates short-lived certificates per session
+- **Email OTP** — CF Access requires identity verification before granting access
+- **Encrypted tunnel** — all traffic goes through CF's edge, your home IP is never exposed
+- **No admin needed** — everything runs in userspace on the work machine
+- **No secrets in repo** — all artifacts go to `../erebus-temp/` (outside the git tree)
+- **Scoped API tokens** — bootstrap creates tokens with only the required permissions
+- **Localhost-only services** — ttyd and the tunnel bind to `127.0.0.1`
+
+---
+
+## Troubleshooting
+
+**"Connection refused" in browser terminal:**
+- ttyd isn't running. Check: `pgrep -fl ttyd`
+- Restart: `sudo launchctl kickstart -k system/com.ttyd.terminal`
+
+**Can see the terminal but can't type:**
+- ttyd was started without `-W` (writable) flag. Restart with `-W`.
+
+**"websocket: bad handshake" from CLI SSH:**
+- The `edge-sync` Worker may need redeployment. Re-run bootstrap with `--redeploy`.
+
+**DNS doesn't resolve from work:**
+- Expected on corporate networks. The work installer auto-detects this and routes
+  through `workers.dev`. Re-run the work installer if needed.
+
+**Tunnel not connecting:**
+- Check: `sudo launchctl list | grep cloudflared`
+- Restart: `sudo launchctl kickstart -k system/com.cloudflare.cloudflared`
+- Logs: `cat /var/log/cloudflared/cloudflared.log`
+
+**OTP email never arrives:**
+- Check spam. CF sends from `noreply@notify.cloudflare.com`.
 
 ---
 
 ## Third-party tools
 
-- **cloudflared** -- [github.com/cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) -- Apache 2.0
-- **tailscale/tsnet** -- [github.com/tailscale/tailscale](https://github.com/tailscale/tailscale) -- BSD 3-Clause
+- **cloudflared** — [github.com/cloudflare/cloudflared](https://github.com/cloudflare/cloudflared) — Apache 2.0
+- **ttyd** — [github.com/tsl0922/ttyd](https://github.com/tsl0922/ttyd) — MIT
+- **tailscale/tsnet** — [github.com/tailscale/tailscale](https://github.com/tailscale/tailscale) — BSD 3-Clause (optional)
 
-Cloudflare Workers, Tunnels, and Access are subject to [Cloudflare's Terms of Service](https://www.cloudflare.com/terms/).
-Tailscale services are subject to [Tailscale's Terms of Service](https://tailscale.com/terms).
+Cloudflare services subject to [Cloudflare's Terms](https://www.cloudflare.com/terms/).
 
 ---
 
 ## License
 
-MIT -- see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).
