@@ -1472,11 +1472,14 @@ export default {
       }
     }
 
-    // Rewrite HTML title
+    // Rewrite HTML: title + inject paste button
     const ct = (resp.headers.get('Content-Type') || '');
     if (ct.includes('text/html')) {
       let body = await resp.text();
       body = body.replace(/ttyd - Terminal/g, 'Edge Sync - Dashboard');
+      body = body.replace(/ttyd/gi, 'app');
+      const pasteUI = '<div id="eb-ui" style="position:fixed;top:8px;right:8px;z-index:9999"><button onclick="ebOpen()" style="background:#333;color:#ccc;border:1px solid #555;border-radius:4px;padding:4px 10px;font-size:12px;cursor:pointer;font-family:monospace" title="Paste text into terminal">📝 Text</button></div><script>function ebSend(t){if(!t)return;if(window.term&&window.term.paste){window.term.paste(t)}else if(window.term&&window.term.input){window.term.input(t)}}function ebOpen(){var o=document.createElement("div");o.style.cssText="position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:9999";var ta=document.createElement("textarea");ta.style.cssText="position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);width:60%;height:40%;z-index:10000;background:#1e1e1e;color:#0f0;border:2px solid #555;border-radius:8px;padding:12px;font-family:monospace;font-size:14px;resize:none";ta.placeholder="Paste or type here, then click Send";var b=document.createElement("button");b.textContent="Send to terminal";b.style.cssText="position:fixed;top:calc(50% + 22%);left:50%;transform:translateX(-50%);z-index:10001;background:#2a6;color:#fff;border:none;border-radius:4px;padding:8px 20px;cursor:pointer;font-size:14px";var cl=function(){o.remove();ta.remove();b.remove()};o.onclick=cl;b.onclick=function(){if(ta.value)ebSend(ta.value);cl()};ta.addEventListener("keydown",function(e){if(e.key==="Escape")cl()});document.body.append(o,ta,b);ta.focus()}(function f(){if(window.term)return;try{var el=document.querySelector(".xterm");if(el&&el._core){window.term=el._core._terminal||el._core;return}}catch(e){}setTimeout(f,1000)})();</script>';
+      body = body.replace('</body>', pasteUI + '</body>');
       const newHeaders = new Headers(resp.headers);
       newHeaders.delete('Content-Length');
       return new Response(body, {
