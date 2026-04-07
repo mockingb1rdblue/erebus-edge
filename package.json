@@ -1,0 +1,28 @@
+{
+  "name": "erebus-edge",
+  "version": "1.0.0",
+  "description": "Access your home machine from a locked-down corporate network. No admin privileges. No VPN. No IT ticket.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mockingb1rdblue/erebus-edge.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/mockingb1rdblue/erebus-edge/issues"
+  },
+  "homepage": "https://github.com/mockingb1rdblue/erebus-edge#readme",
+  "devDependencies": {
+    "@types/selenium-webdriver": "^4.35.5",
+    "selenium-webdriver": "^4.41.0"
+  }
+}

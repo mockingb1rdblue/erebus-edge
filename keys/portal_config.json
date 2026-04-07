@@ -1,0 +1,15 @@
+{
+  "account_id": "a62c1c7880b50ac345fc7c2135f6ae84",
+  "subdomain": "mock1ng",
+  "tunnel_id": "38b5fb48-52cd-4c3a-9185-020f9ffad997",
+  "ssh_host": "ssh.mock1ngbb.com",
+  "domain": "mock1ngbb.com",
+  "zone_id": "383cf8210a834fefcd9229e975e7c9de",
+  "tunnel_token": "eyJhIjoiYTYyYzFjNzg4MGI1MGFjMzQ1ZmM3YzIxMzVmNmFlODQiLCJ0IjoiMzhiNWZiNDgtNTJjZC00YzNhLTkxODUtMDIwZjlmZmFkOTk3IiwicyI6Ill4NUsvWTZWT3MzOWFwaDZReVFycU9kaVJQT1laQzhCYVVRalJzOEdibWNQOXI3QUdEMkFxSm9mUGlRTElqUmZ1dFJOZ21uT1JYSmtCakgybDNGVFV3PT0ifQ==",
+  "ts_relay_url": "https://ts-relay.mock1ng.workers.dev",
+  "ssh_ca_public_key": "ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBI5ih5EEzZAen1foMvkh3GHc+i0QZJ+xc7esXv59DlWwLbZ4RQY7KghrKJtbiFIla9hc5q2YY4V/QjReKv8TbLI= open-ssh-ca@cloudflareaccess.org",
+  "ssh_app_aud": "",
+  "team_name": "erebus-edge",
+  "service_token_id": "6c48cd210b302edd31ce172337e4357b.access",
+  "service_token_secret": "7cce1021e65b8a5616e7345f1d44a19be8fb15c9fbc328afe8cdf413d4ed7617"
+}
