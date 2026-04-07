@@ -1,3 +1,9 @@
+# ── Node ──────────────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+*.log
+
 # ── Generated at runtime (user-specific, never commit) ──────────────────────
 keys/                   # CF tokens, config (portal_config.json), DPAPI secrets
 cf_config.txt           # connect.bat/sh saved settings
