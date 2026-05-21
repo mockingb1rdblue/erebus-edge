@@ -13,7 +13,7 @@ routed through `cloudflared` / a `workers.dev` relay.
 
 Each user deploys their own instance into their own Cloudflare account. The
 repo is shared; URLs and credentials are not. All generated artifacts land in
-`../erebus-temp/` (outside the git tree).
+`../.temp/erebus/` (outside the git tree).
 
 ## Languages & tools
 
@@ -55,7 +55,7 @@ LICENSE       MIT
 README.md     User-facing docs (authoritative for end-user flows)
 ```
 
-`../erebus-temp/` (sibling of the repo, not tracked) holds per-user config,
+`../.temp/erebus/` (sibling of the repo, not tracked) holds per-user config,
 tokens, and downloaded binaries.
 
 ## Common commands
@@ -104,7 +104,7 @@ npm install
   installer must be mirrored in the matching `.bat`. The README documents
   flags in a single table, so keep both in sync with that table.
 - **No secrets in repo** — all account-specific material (tokens, tunnel IDs,
-  portal config) lives in `../erebus-temp/`. `.gitignore` excludes `keys/`.
+  portal config) lives in `../.temp/erebus/`. `.gitignore` excludes `keys/`.
 - **Localhost-only services** — ttyd binds to `127.0.0.1:7681`; the tunnel
   handles external exposure. The `-W` flag on ttyd is required for writable
   terminals.
@@ -139,7 +139,7 @@ npm install
 - Do not add runtime dependencies to the `.sh`/`.bat` installers (no Python,
   no Node). They must work on a fresh machine.
 - Do not break the "share the repo, not the URL" invariant — any new config
-  must be written to `../erebus-temp/`, not committed.
+  must be written to `../.temp/erebus/`, not committed.
 - Do not hardcode domains, tokens, emails, or tunnel IDs. Every such value is
   per-user and belongs in the temp config.
 - Do not force-push or `--no-verify` — let hooks run.

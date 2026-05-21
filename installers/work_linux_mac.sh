@@ -5,7 +5,7 @@
 #  No admin/sudo required.
 #
 #  Usage:
-#    ./work_linux_mac.sh                          (auto-reads from ../erebus-temp/)
+#    ./work_linux_mac.sh                          (auto-reads from ../.temp/erebus/)
 #    ./work_linux_mac.sh --ssh-host <HOST>         (skip prompt)
 #
 #  If bootstrap was run on this machine, just run with no arguments.
@@ -26,7 +26,7 @@ PREREQUISITES:
   1. Run bootstrap.sh first (creates tunnel, DNS, Access policies).
   2. Run home_linux_mac.sh on your home machine (starts the tunnel).
   3. If bootstrap ran on a different machine, copy the repo and the
-     ../erebus-temp/ folder here, or pass --ssh-host manually.
+     ../.temp/erebus/ folder here, or pass --ssh-host manually.
 
 USAGE:
   ./work_linux_mac.sh                          Auto-reads config
@@ -37,7 +37,7 @@ OPTIONS:
   -h, --help            Show this help
 
 WHAT IT DOES (step by step):
-  1. Reads SSH host from ../erebus-temp/keys/portal_config.json
+  1. Reads SSH host from ../.temp/erebus/keys/portal_config.json
      (or accepts --ssh-host flag)
   2. Downloads cloudflared to ~/.erebus-edge/ (no admin needed)
   3. Creates a connect helper script (~/.erebus-edge/connect.sh)
@@ -56,7 +56,7 @@ BROWSER TERMINAL (no setup needed):
   This is the recommended way to connect from corporate networks.
 
   The URL is printed at the end of bootstrap and home installer.
-  You can also find it in ../erebus-temp/keys/portal_config.json
+  You can also find it in ../.temp/erebus/keys/portal_config.json
   under the "edge_sync_url" key.
 
 CLI SSH (optional, for power users):
@@ -112,11 +112,11 @@ done
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CFG_FILE=""
 # Check relative to installers/ dir (running from repo)
-[[ -f "$_SCRIPT_DIR/../erebus-temp/keys/portal_config.json" ]] && \
-    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/erebus-temp/keys/portal_config.json"
+[[ -f "$_SCRIPT_DIR/../.temp/erebus/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/.temp/erebus/keys/portal_config.json"
 # Check relative to repo root (running from repo root)
-[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../erebus-temp/keys/portal_config.json" ]] && \
-    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/erebus-temp/keys/portal_config.json"
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../.temp/erebus/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/.temp/erebus/keys/portal_config.json"
 # Check keys/ inside repo (legacy location)
 [[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../keys/portal_config.json" ]] && \
     _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/keys/portal_config.json"

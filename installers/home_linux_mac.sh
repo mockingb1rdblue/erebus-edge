@@ -31,7 +31,7 @@ erebus-edge — Home Machine Setup (Linux / macOS)
 PREREQUISITES:
   1. Run bootstrap.sh first (creates tunnel, DNS, Access policies).
   2. If bootstrap ran on a different machine, copy the repo and the
-     ../erebus-temp/ folder to this machine before running.
+     ../.temp/erebus/ folder to this machine before running.
 
 USAGE:
   ./home_linux_mac.sh                           Interactive mode
@@ -50,7 +50,7 @@ OPTIONS:
   -h, --help            Show this help
 
 WHAT IT DOES (step by step):
-  1. Reads config from ../erebus-temp/keys/portal_config.json
+  1. Reads config from ../.temp/erebus/keys/portal_config.json
      (or accepts --token / --ssh-host flags)
   2. Enables the SSH server if not already running
   3. Downloads and installs cloudflared (tunnel agent)
@@ -181,11 +181,11 @@ fi
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _CFG_FILE=""
 # Check relative to installers/ dir (running from repo)
-[[ -f "$_SCRIPT_DIR/../erebus-temp/keys/portal_config.json" ]] && \
-    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/erebus-temp/keys/portal_config.json"
+[[ -f "$_SCRIPT_DIR/../.temp/erebus/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/.temp/erebus/keys/portal_config.json"
 # Check relative to repo root (running from repo root)
-[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../erebus-temp/keys/portal_config.json" ]] && \
-    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/erebus-temp/keys/portal_config.json"
+[[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../../.temp/erebus/keys/portal_config.json" ]] && \
+    _CFG_FILE="$(cd "$_SCRIPT_DIR/../.." && pwd)/.temp/erebus/keys/portal_config.json"
 # Check keys/ inside repo (legacy location)
 [[ -z "$_CFG_FILE" && -f "$_SCRIPT_DIR/../keys/portal_config.json" ]] && \
     _CFG_FILE="$(cd "$_SCRIPT_DIR/.." && pwd)/keys/portal_config.json"
@@ -221,7 +221,7 @@ if [[ -z "$TOKEN" ]]; then
         echo ""
         echo "  Where to find it:"
         echo "    1. If you ran bootstrap, it printed the token at the end."
-        echo "       It also saved it to: ../erebus-temp/keys/portal_config.json"
+        echo "       It also saved it to: ../.temp/erebus/keys/portal_config.json"
         echo ""
         echo "    2. In the Cloudflare Zero Trust dashboard:"
         echo "       one.dash.cloudflare.com -> Networks -> Tunnels"

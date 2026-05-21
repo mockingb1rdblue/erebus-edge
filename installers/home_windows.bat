@@ -101,8 +101,8 @@ if defined DO_RESTART (
 
 REM ── Auto-read config from bootstrap output if flags not provided ──
 set "_CFG_FILE="
-if exist "%~dp0..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\erebus-temp\keys\portal_config.json"
-if "%_CFG_FILE%"=="" if exist "%~dp0..\..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\erebus-temp\keys\portal_config.json"
+if exist "%~dp0..\.temp\erebus\keys\portal_config.json" set "_CFG_FILE=%~dp0..\.temp\erebus\keys\portal_config.json"
+if "%_CFG_FILE%"=="" if exist "%~dp0..\..\.temp\erebus\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\.temp\erebus\keys\portal_config.json"
 REM Check keys/ inside repo (legacy location)
 if "%_CFG_FILE%"=="" if exist "%~dp0..\keys\portal_config.json" set "_CFG_FILE=%~dp0..\keys\portal_config.json"
 
@@ -157,7 +157,7 @@ if "%TOKEN%"=="" (
     echo.
     echo   Where to find it:
     echo     1. If you ran bootstrap, it printed the token at the end.
-    echo        It also saved it to: ..\erebus-temp\keys\portal_config.json
+    echo        It also saved it to: ..\.temp\erebus\keys\portal_config.json
     echo.
     echo     2. In the Cloudflare Zero Trust dashboard:
     echo        one.dash.cloudflare.com -^> Networks -^> Tunnels

@@ -63,7 +63,7 @@ The `--email` is the address you'll use to log in (Cloudflare sends a one-time c
 **What happens:**
 - Opens your browser to create a Cloudflare API token (with step-by-step instructions)
 - Creates a tunnel, DNS record, and access policies automatically
-- Saves all config to `../erebus-temp/` (outside the repo, never committed)
+- Saves all config to `../.temp/erebus/` (outside the repo, never committed)
 
 <details>
 <summary><b>All bootstrap flags</b> (for power users)</summary>
@@ -94,7 +94,7 @@ On the machine you want to connect TO:
 installers\home_windows.bat           # Windows
 ```
 
-If bootstrap ran on a different machine, copy the repo + `../erebus-temp/` folder
+If bootstrap ran on a different machine, copy the repo + `../.temp/erebus/` folder
 to your home machine first.
 
 **What it does:**
@@ -216,7 +216,7 @@ tsnet/                          Optional: userspace Tailscale (Go)
 docs/
   BUILD_NOTES.md                Architecture decisions & CF API patterns
 
-../erebus-temp/                 Created by bootstrap (outside repo, gitignored)
+../.temp/erebus/                Created by bootstrap (outside repo, gitignored)
   keys/portal_config.json        Your account config (tokens, IDs, domain)
   bin/                           Downloaded binaries
 ```
@@ -310,7 +310,7 @@ endpoint and CLI requests to the SSH tunnel.
 - **Email OTP** — CF Access requires identity verification before granting access
 - **Encrypted tunnel** — all traffic goes through CF's edge, your home IP is never exposed
 - **No admin needed** — everything runs in userspace on the work machine
-- **No secrets in repo** — all artifacts go to `../erebus-temp/` (outside the git tree)
+- **No secrets in repo** — all artifacts go to `../.temp/erebus/` (outside the git tree)
 - **Scoped API tokens** — bootstrap creates tokens with only the required permissions
 - **Localhost-only services** — ttyd and the tunnel bind to `127.0.0.1`
 

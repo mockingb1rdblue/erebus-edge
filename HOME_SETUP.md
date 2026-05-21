@@ -43,7 +43,7 @@ The wizard will:
 3. Create DNS records
 4. Set up Zero Trust Access (email OTP + browser SSH)
 
-Everything saves to `../erebus-temp/` (outside the repo).
+Everything saves to `../.temp/erebus/` (outside the repo).
 
 ---
 

@@ -65,8 +65,8 @@ exit /b 0
 
 REM ── Auto-read config from bootstrap output if not provided ────
 set "_CFG_FILE="
-if exist "%~dp0..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\erebus-temp\keys\portal_config.json"
-if "%_CFG_FILE%"=="" if exist "%~dp0..\..\erebus-temp\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\erebus-temp\keys\portal_config.json"
+if exist "%~dp0..\.temp\erebus\keys\portal_config.json" set "_CFG_FILE=%~dp0..\.temp\erebus\keys\portal_config.json"
+if "%_CFG_FILE%"=="" if exist "%~dp0..\..\.temp\erebus\keys\portal_config.json" set "_CFG_FILE=%~dp0..\..\.temp\erebus\keys\portal_config.json"
 REM Check keys/ inside repo (legacy location)
 if "%_CFG_FILE%"=="" if exist "%~dp0..\keys\portal_config.json" set "_CFG_FILE=%~dp0..\keys\portal_config.json"
 

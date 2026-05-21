@@ -2,7 +2,7 @@
 # bootstrap.sh -- First-run setup wizard for erebus-edge (macOS / Linux).
 #
 # Self-contained -- no Python, no external deps beyond curl + cloudflared.
-# All artifacts go to ../erebus-temp/ (repo stays clean).
+# All artifacts go to ../.temp/erebus/ (repo stays clean).
 #
 # Usage:
 #   ./bootstrap.sh --email user@example.com
@@ -19,7 +19,7 @@ set -o pipefail
 # ═══════════════════════════════════════════════════════════════════════════
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEMP_DIR="$(cd "$REPO_ROOT/.." && pwd)/erebus-temp"
+TEMP_DIR="$(cd "$REPO_ROOT/.." && pwd)/.temp/erebus"
 KEYS_DIR="$TEMP_DIR/keys"
 BIN_DIR="$TEMP_DIR/bin"
 CF_CFG_TXT="$TEMP_DIR/cf_config.txt"
@@ -1812,16 +1812,16 @@ print_summary() {
     printf "    ${Y}If this IS your home machine:${X}\n"
     printf "      ./installers/home_linux_mac.sh\n\n"
     printf "    ${Y}If your home machine is a different box:${X}\n"
-    printf "    Copy the repo (or just installers/ + ../erebus-temp/) there, then:\n\n"
+    printf "    Copy the repo (or just installers/ + ../.temp/erebus/) there, then:\n\n"
     printf "    ${Y}Linux / Mac:${X}\n"
     printf "      ./installers/home_linux_mac.sh\n"
     printf "    ${Y}Windows:${X}\n"
     printf "      installers\\\\home_windows.bat\n\n"
-    printf "    ${D}Auto-reads token, SSH CA key, and host from ../erebus-temp/.${X}\n"
+    printf "    ${D}Auto-reads token, SSH CA key, and host from ../.temp/erebus/.${X}\n"
     printf "    ${D}Asks: Quick start (no root) or Full system setup (sudo/admin).${X}\n"
     printf "    ${D}Or pass --sudo/--no-sudo (--admin/--no-admin on Windows).${X}\n\n"
     printf "  ${C}STEP 2 -- Set up your WORK machine${X} (the one you connect from)\n"
-    printf "  Copy installers/ + ../erebus-temp/ to your work machine, then run:\n\n"
+    printf "  Copy installers/ + ../.temp/erebus/ to your work machine, then run:\n\n"
     printf "    ${Y}Linux / Mac:${X}\n"
     printf "      chmod +x work_linux_mac.sh && ./work_linux_mac.sh\n\n"
     printf "    ${Y}Windows (no admin needed):${X}\n"
@@ -1876,7 +1876,7 @@ PREREQUISITE: A domain on your Cloudflare account (even a $1/yr .xyz).
 OUTPUT: After completion, your browser terminal URL is printed:
           https://edge-sync.YOUR_SUBDOMAIN.workers.dev
         Open it from any browser — no install needed on the work machine.
-        Config is saved to ../erebus-temp/keys/portal_config.json.
+        Config is saved to ../.temp/erebus/keys/portal_config.json.
 
 Authentication (choose one, or interactive menu):
   (default)           Opens CF Dashboard with step-by-step instructions to
@@ -1922,7 +1922,7 @@ Examples:
   ./bootstrap.sh --cf-token "YOUR_TOKEN" --save-token \
     --email user@example.com --domain myname.xyz --skip-tsnet
 
-Artifacts are written to ../erebus-temp/ (repo stays clean).
+Artifacts are written to ../.temp/erebus/ (repo stays clean).
 HELPEOF
             exit 0
             ;;

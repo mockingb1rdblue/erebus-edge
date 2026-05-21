@@ -83,11 +83,11 @@ home_windows.bat --help
 
 ## Where do artifacts go?
 
-Bootstrap writes config and downloaded binaries to `../erebus-temp/`
+Bootstrap writes config and downloaded binaries to `../.temp/erebus/`
 (a sibling directory outside the repo). This keeps the git repo clean.
 
 ```
-../erebus-temp/
+../.temp/erebus/
   keys/portal_config.json   Account IDs, tunnel ID, SSH CA key, etc.
   bin/cloudflared           Downloaded if not already in PATH
   cf_config.txt             SSH host for connect scripts
@@ -95,7 +95,7 @@ Bootstrap writes config and downloaded binaries to `../erebus-temp/`
 
 This directory is only used by the bootstrap script (for `--redeploy`
 and config persistence). The home/work installers get everything they
-need via command-line flags -- they don't read from `../erebus-temp/`.
+need via command-line flags -- they don't read from `../.temp/erebus/`.
 
 No secrets are stored in the repo. Tokens are passed as arguments.
 The CF API token is stored in your platform's credential store

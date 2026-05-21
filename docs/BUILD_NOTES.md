@@ -10,7 +10,7 @@ corporate network bypass tools).
 
 ### Artifacts outside the repo
 
-All generated files (keys, binaries, config) go to `../erebus-temp/` -- a
+All generated files (keys, binaries, config) go to `../.temp/erebus/` -- a
 sibling directory outside the git repo. This keeps `git status` clean and
 avoids accidentally committing secrets. The repo contains only source code
 and installer scripts.
@@ -331,7 +331,7 @@ service, reports success, but the service immediately crash-loops.
 have downstream scripts auto-read it:
 
 ```bash
-# bootstrap writes to ../erebus-temp/keys/portal_config.json
+# bootstrap writes to ../.temp/erebus/keys/portal_config.json
 # home installer auto-reads it -- no arguments needed:
 ./installers/home_linux_mac.sh
 ```

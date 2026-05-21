@@ -3,7 +3,7 @@ setlocal EnableDelayedExpansion
 :: bootstrap.bat -- First-run setup wizard for erebus-edge (Windows).
 ::
 :: Self-contained -- uses PowerShell for HTTP/JSON, DPAPI for credential storage.
-:: All artifacts go to ..\erebus-temp\ (repo stays clean).
+:: All artifacts go to ..\.temp\erebus\ (repo stays clean).
 ::
 :: Usage:
 ::   bootstrap.bat --email user@example.com
@@ -20,7 +20,7 @@ set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_DIR=%SCRIPT_DIR:~0,-1%"
 for %%I in ("%SCRIPT_DIR%\..") do set "REPO_ROOT=%%~fI"
 for %%I in ("%REPO_ROOT%\..") do set "PARENT_DIR=%%~fI"
-set "TEMP_DIR=%PARENT_DIR%\erebus-temp"
+set "TEMP_DIR=%PARENT_DIR%\.temp\erebus"
 set "KEYS_DIR=%TEMP_DIR%\keys"
 set "BIN_DIR=%TEMP_DIR%\bin"
 set "CF_CFG_TXT=%TEMP_DIR%\cf_config.txt"
