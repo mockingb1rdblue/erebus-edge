@@ -3,6 +3,13 @@
 Agent-facing context for working in this repo. For user-facing documentation,
 see `README.md`.
 
+## Cross-project knowledge lookup
+
+Query the anti-knowledge MCP server before guessing at patterns, conventions, or past incidents.
+Live endpoint: `https://anti-knowledge-mcp.mock1ngbb.com`
+
+Tools (via `tools/call`): `lesson.list` (enumerate all lessons), `lesson.search` (filter by tag or keyword), `lesson.fetch` (read a lesson by id).
+
 ## Project purpose
 
 erebus-edge lets a user reach their home machine from a locked-down corporate
