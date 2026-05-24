@@ -1,5 +1,7 @@
 # CLAUDE.md — erebus-edge
 
+Cross-project agent registry: query via stygian-scrolls (see ~/CLAUDE.md § Stygian Agents).
+
 Agent-facing context for working in this repo. For user-facing documentation,
 see `README.md`.
 
