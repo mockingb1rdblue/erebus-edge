@@ -1,0 +1,328 @@
+{
+  "fqdns": [
+    "antigh/erebus-edge://erebus-installer-warden",
+    "antigh/anti-knowledge://mcp-warden",
+    "antigh/bifrost-bridge://deploy-warden",
+    "antigh/grim-gambit://grim-deploy-warden",
+    "antigh/TeamNav://installer-warden",
+    "antigh/game-ports://port-loadout-warden",
+    "antigh/haggard-harbinger://broker-warden",
+    "antigh/vestas-warpath://dashboard-warden",
+    "antigh/daily-stoic-bot://stoic-worker-warden",
+    "antigh/CarPiggy://carpiggy-pigstar-warden",
+    "antigh/rift-root://edge-deployer",
+    "antigh/dreadful-depths://workers-warden",
+    "antigh/rift-root://content-scribe",
+    "antigh/grim-gambit://grim-app-warden",
+    "antigh/bifrost-bridge://loop-conductor",
+    "antigh/multimedia-rework://mcp-server-warden",
+    "antigh/haggard-harbinger://pwa-warden",
+    "antigh/bifrost-bridge://sluagh-handler-warden",
+    "antigh/multimedia-rework://svg-rasterizer-warden",
+    "antigh/haggard-harbinger://bridge-warden",
+    "antigh/navia-node://cf-workers-deploy-warden"
+  ],
+  "byProject": {
+    "erebus-edge": [
+      {
+        "slug": "erebus-installer-warden",
+        "fqdn": "antigh/erebus-edge://erebus-installer-warden",
+        "description": "Use this agent for erebus-edge installer development \u2014 Bash/.sh and Batch/.bat installer pair maintenance, Cloudflare Tunnel / Zero Trust Access setup, ttyd LaunchDaemon configuration, tsnet Go binary updates, and the corporate-DNS-blocked work-side relay fallback. Enforces installer parity (.sh \u2194 .bat), userspace-only invariant on work machines, and per-user temp config isolation. Opens PR against hee-haw.\\n\\nTrigger examples:\\n- 'add a flag to the bootstrap installer'\\n- 'fix work_windows.bat relay fallback'\\n- 'update the ttyd LaunchDaemon plist'\\n- 'patch the cloudflared download URL'\\n- 'audit installer parity between .sh and .bat'\\n- 'add a CF Access policy step'\\n- 'debug the tsnet Go build'\\n- 'fix corporate DNS detection'\\n- 'rotate scoped CF API token permissions'\\n- 'investigate the Python reference wizard'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "anti-knowledge": [
+      {
+        "slug": "mcp-warden",
+        "fqdn": "antigh/anti-knowledge://mcp-warden",
+        "description": "Use this agent for anti-knowledge MCP server work \u2014 the Cloudflare Worker at `mcp.anti-knowledge.mock1ngbb.com` that exposes lessons as MCP tools (lesson.list, lesson.search, lesson.fetch) and resources. Owns `server/` (src/, test/, wrangler.toml, package.json, vitest.config.ts). Specializes in Cloudflare Workers idioms, MCP protocol shape, scheduled sync, and live-proof deploys.\\n\\nTrigger examples:\\n- 'deploy MCP server'\\n- 'lesson.search returning stale results'\\n- 'add new MCP tool for lesson.diff'\\n- 'fix tools/call protocol drift'\\n- 'wrangler deploy fails'\\n- 'sync cron not firing'\\n- 'MCP server returning 500'\\n- 'add resource for lesson template'\\n- 'audit MCP tool surface'\\n- 'verify build_commit on health endpoint'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "bifrost-bridge": [
+      {
+        "slug": "deploy-warden",
+        "fqdn": "antigh/bifrost-bridge://deploy-warden",
+        "description": "Use this agent for deploy convergence runs \u2014 pulling hee-haw tip and deploying every STALE Cloudflare Worker to production. This agent runs no PRs, makes no commits. It owns the deploy loop: wrangler deploy, health verification, retry-on-failure, and abort-on-third-retry. Knows all wrangler quirks (4.94.0 broken, use 4.87.0), CF Access skip patterns, the erebus custom domain, and the intentional sluagh-sprite-runtime skip.\\n\\nTrigger examples:\\n- 'run deploy convergence'\\n- 'deploy all stale workers'\\n- 'bring everything up to date'\\n- 'run preflight-ship'\\n- 'what workers are behind, deploy them'\\n- 'convergence run'\\n- 'deploy wave'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read"
+        ]
+      },
+      {
+        "slug": "loop-conductor",
+        "fqdn": "antigh/bifrost-bridge://loop-conductor",
+        "description": "Use this agent to orchestrate multi-wave gap-debt-upgrade loops \u2014 coordinating sequential or parallel dispatches of deploy-warden, refactor-warden, surface-warden, rule-warden, and cost-warden agents across a planned session. The conductor reads the NEXT_SESSION plan, decomposes waves, dispatches agents via worktree isolation, monitors branch presence, and reports aggregate results. Use when you have a structured plan with multiple agent tasks to execute.\\n\\nTrigger examples:\\n- 'run the gap-debt-upgrade loop'\\n- 'orchestrate the wave plan'\\n- 'conductor, run the plan'\\n- 'fire all waves'\\n- 'dispatch the session plan'\\n- 'run the loop'\\n- 'execute the next session plan'\\n- 'coordinate the agent waves'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Task"
+        ]
+      },
+      {
+        "slug": "sluagh-handler-warden",
+        "fqdn": "antigh/bifrost-bridge://sluagh-handler-warden",
+        "description": "Use this agent for sluagh-swarm handler analysis, debugging, and spec work. Expertise: handler registry bootstrap, push+poll hybrid dispatch, secret resolution, drain loop mechanics, heartbeat/stall detection, retry semantics, handler lifecycle contracts, and failure routing. Deep familiarity with all 33+ registered handlers and their invariants. Trigger examples: 'sluagh handler issue', 'handler stalled', 'dispatcher loop debug', 'cairn-coder timeout', 'verify handler failing', 'handler registry health', 'handler dispatch pattern', 'handler retry logic', 'handler side-effect suppression', 'sluagh task routing'.",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write"
+        ]
+      }
+    ],
+    "grim-gambit": [
+      {
+        "slug": "grim-deploy-warden",
+        "fqdn": "antigh/grim-gambit://grim-deploy-warden",
+        "description": "Use this agent for grim-gambit deploy orchestration: Turborepo (`turbo.json`), root-level build/typecheck/lint coordination, the `packageManager` field gap blocking `npm run build` at root, Wrangler deploys across apps + workers, CF Access bypass-app management for `*.mock1ngbb.com`, Renovate auto-merge policy, and the bifrost-bootstrap CF token discipline. Runs preflight, deploys, verifies live, opens PR.\\n\\nTrigger examples:\\n- 'fix the packageManager turbo block'\\n- 'deploy all platform workers'\\n- 'audit CF Access bypass apps'\\n- 'check renovate.json policy'\\n- 'set up CI deploy for new app'\\n- 'verify all live workers match HEAD'\\n- 'audit wrangler.toml compatibility_date drift'\\n- 'rotate CF token across deploys'\\n- 'add new domain to CF Access bypass'\\n- 'investigate stuck turbo build'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      },
+      {
+        "slug": "grim-app-warden",
+        "fqdn": "antigh/grim-gambit://grim-app-warden",
+        "description": "Use this agent for the 34-app portfolio under `apps/*` in grim-gambit. Owns Astro 6 / React 19 / Vite stacks, per-app `wrangler.toml` or `astro.config.mjs`, content-collection schemas, `bifrost-meta.json` MAB health metadata, `APPS-GRAPH.json` cross-app relationships, and the partial Astro 5\u21926 migration. Runs per-app build/typecheck, opens PR.\\n\\nTrigger examples:\\n- 'audit apps/wiki content collections'\\n- 'migrate apps/store from Astro 5 to 6'\\n- 'fix portfolio build failure'\\n- 'add new app to APPS-GRAPH.json'\\n- 'investigate void-crucible Godot build'\\n- 'debug glyph-grotto ClientRouter'\\n- 'check astro check across all astro apps'\\n- 'fix forum React 19 hydration mismatch'\\n- 'audit bifrost-meta.json drift'\\n- 'wire @grim/auth into apps/store'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "TeamNav": [
+      {
+        "slug": "installer-warden",
+        "fqdn": "antigh/TeamNav://installer-warden",
+        "description": "Use this agent for TeamNav installer/auth/distribution work \u2014 MSAL authentication, SharePoint REST file downloads, Windows shortcut creation, Task Scheduler integration, PyInstaller builds, and silent-mode update flows. Owns `src/` (auth.py, sharepoint.py, shortcuts.py, scheduler.py, installer.py, config.py, gui.py) plus `platform/installer/`. Runs build, opens PR.\\n\\nTrigger examples:\\n- 'fix MSAL token cache corruption'\\n- 'debug silent update failure on user machine'\\n- 'add new shortcut target for Edge browser'\\n- 'investigate SharePoint 401 on download'\\n- 'rebuild TeamNav.exe with new icon'\\n- 'task scheduler XML drift'\\n- 'audit installer self-copy path'\\n- 'silent mode opening console window regression'\\n- 'AppData paths wrong on user box'\\n- 'PyInstaller --onefile missing asset'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "game-ports": [
+      {
+        "slug": "port-loadout-warden",
+        "fqdn": "antigh/game-ports://port-loadout-warden",
+        "description": "Use this agent for game-ports workspace work \u2014 primarily the handheld-doomquake port (Delta Touch / Quake Android loadouts for Retroid Pocket 6 and AYN Odin 2 Portal). Owns the source manifest, update-check / deploy scripts (adb / rsync), per-mod engine selection, and the gitignore discipline that keeps copyrighted assets out of the tree. New sub-ports under game-ports also route here until they grow their own agent.\\n\\nTrigger examples:\\n- 'add a new megawad to the manifest'\\n- 'fix the update-check.sh poll for ModDB'\\n- 'wire a deploy-quake.sh path for Odin 2'\\n- 'audit the .gitignore for wad/pak leaks'\\n- 'document per-mod engine choice'\\n- 'pull the latest Ashes 2063 release'\\n- 'add a new sub-port directory under game-ports'\\n- 'update gamepad bindings in autoexec.cfg'\\n- 'check Quaddicted RSS for new releases'\\n- 'verify reproducible build from clean checkout'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "haggard-harbinger": [
+      {
+        "slug": "broker-warden",
+        "fqdn": "antigh/haggard-harbinger://broker-warden",
+        "description": "Use this agent for the CF Worker broker at workers/harbinger-broker/ \u2014 PWA-facing /api routes, CF Access Zero Trust integration, Durable Object HarbingerQueue (approval queue state), D1 'harbinger' journal/rounds DB, KV settings namespace, HMAC-signed callbacks to the Fly daemon, cron trigger /rounds/divine, and Pub/Sub Gmail webhooks. Runs wrangler deploy --dry-run, opens PR.\\n\\nTrigger examples:\\n- 'audit harbinger-broker routes'\\n- 'debug cf access rejection'\\n- 'fix harbinger queue DO'\\n- 'investigate d1 journal'\\n- 'add new broker route'\\n- 'trace pub/sub webhook'\\n- 'fix hmac sign on broker callback'\\n- 'broker cron not firing'\\n- 'mobile-profile-bypass access policy'\\n- 'check wrangler bindings'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      },
+      {
+        "slug": "pwa-warden",
+        "fqdn": "antigh/haggard-harbinger://pwa-warden",
+        "description": "Use this agent for the PWA frontend at pwa/ \u2014 vanilla TS SPA bundled to pwa/public/bundle.js, served by the daemon's express.static, same-origin /api calls (no auth headers in browser), WebSocket /api/queue subscription, Setup tab TOTP flow, approval queue UI, journal UI, settings/confidence views, and the build pipeline via pwa/build.mjs. Runs the PWA build, opens PR.\\n\\nTrigger examples:\\n- 'fix pwa setup tab'\\n- 'investigate websocket disconnect ui'\\n- 'add new approval queue field'\\n- 'pwa build broken'\\n- 'audit pwa bundle size'\\n- 'journal view shows wrong data'\\n- 'confidence ui regression'\\n- 'totp ui hangs'\\n- 'pwa service worker stale'\\n- 'mobile profile button broken'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      },
+      {
+        "slug": "bridge-warden",
+        "fqdn": "antigh/haggard-harbinger://bridge-warden",
+        "description": "Use this agent for the ProtonMail Bridge sidecar at proton-bridge/ \u2014 separate Fly app harbinger-proton-bridge, ProtonMail Bridge process in --grpc mode, bridge-server.py HTTP control API on port 8888, TOTP login pipeline, IMAP password rotation, stunnel TLS for mobile profile flow, and the gRPC + IMAP wire protocols. Runs fly deploy --build-only, opens PR.\\n\\nTrigger examples:\\n- 'debug proton bridge login'\\n- 'bridge totp pipeline broken'\\n- 'fix bridge-server.py'\\n- 'investigate imap rotation'\\n- 'stunnel config wrong'\\n- 'bridge cold-start too slow'\\n- 'mobile-profile XML wrong'\\n- 'grpc bridge call failing'\\n- 'bridge sidecar 502'\\n- 'measure bridge coldstart'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "vestas-warpath": [
+      {
+        "slug": "dashboard-warden",
+        "fqdn": "antigh/vestas-warpath://dashboard-warden",
+        "description": "Use this agent for warpath-dashboard deploy, bundle, review-sync, and approval-pipeline operations. Owns the Hono + CF Workers + D1 + R2 stack at 04_SCRIPTS/warpath-dashboard. Runs bundle-docs.js, deploys via wrangler, verifies build_commit live, syncs reviews, resolves approval rejections, and rebuilds the rebuttal package. Knows the content-hash invariant across review.ts/bundle-docs.js/sync-reviews.js/draft.py.\\n\\nTrigger examples:\\n- 'deploy dashboard'\\n- 'bundle docs and push'\\n- 'sync reviews'\\n- 'check approval status'\\n- 'rebuild rebuttal package'\\n- 'verify dashboard live'\\n- 'fix rejected comments'\\n- 'dashboard approval pipeline'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "daily-stoic-bot": [
+      {
+        "slug": "stoic-worker-warden",
+        "fqdn": "antigh/daily-stoic-bot://stoic-worker-warden",
+        "description": "Use this agent for daily-stoic-bot Cloudflare Worker development \u2014 Discord interaction handlers, D1 schema/queries, KV secret access, LLM router calls, slash command registration, and the daily-post/engagement service pipeline. Runs lint+test+typecheck+build, opens PR against hee-haw.\\n\\nTrigger examples:\\n- 'add a new stoic slash command'\\n- 'debug discord interaction signature verification'\\n- 'fix d1 migration for entries table'\\n- 'tune evening-exam service prompt'\\n- 'audit kv secret access in handlers'\\n- 'wire a new LLM router endpoint'\\n- 'investigate daily-post scheduling'\\n- 'refactor reaction-poller logic'\\n- 'add streaks calculation'\\n- 'register commands to dev environment'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "CarPiggy": [
+      {
+        "slug": "carpiggy-pigstar-warden",
+        "fqdn": "antigh/CarPiggy://carpiggy-pigstar-warden",
+        "description": "Read-only governance auditor. Reviews proposed CarPiggy changes against the Pigstar Compositor (.claude/rules/pigstar.md and .agent/pigstar/04-pigstar-compositor.md) before code lands. Use PROACTIVELY before merging any non-trivial feature, AI call, DAG change, slash command addition, schema migration, or worker layout change. Also use when the user asks \"is this pigstar-compliant\", \"axiom check\", \"is this on-mission\", \"should we build X\". Returns aligned axioms, violated anti-axioms, required mitigations, and a ship/reshape/kill verdict.",
+        "model": "opus",
+        "tools": [
+          "Read",
+          "Grep",
+          "Glob",
+          "Bash"
+        ]
+      }
+    ],
+    "rift-root": [
+      {
+        "slug": "edge-deployer",
+        "fqdn": "antigh/rift-root://edge-deployer",
+        "description": "Cloudflare Worker / deploy specialist for rift-root. Use for Worker code changes (riftroot-edge, riftroot-demo, riftroot-qa), wrangler.toml edits, Vite build/config, Makefile targets, CF route/DNS work, and any task that ends in `make deploy-*` + live-URL verification. Enforces preflight-ship.sh and the \"live proof before done\" rule.",
+        "model": "sonnet",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Glob",
+          "Grep"
+        ]
+      },
+      {
+        "slug": "content-scribe",
+        "fqdn": "antigh/rift-root://content-scribe",
+        "description": "Fast copy/Markdown/deck-content editor for rift-root. Use for prose tweaks under decks/**/*.md, site copy, README/AGENTS.md edits, deck slide text, alt text, meta tags, and any change that is words-not-code. Cheaper and faster than edge-deployer; hand off to edge-deployer for build/deploy/verification.",
+        "model": "haiku",
+        "tools": [
+          "Read",
+          "Edit",
+          "Write",
+          "Glob",
+          "Grep"
+        ]
+      }
+    ],
+    "dreadful-depths": [
+      {
+        "slug": "workers-warden",
+        "fqdn": "antigh/dreadful-depths://workers-warden",
+        "description": "Use this agent for Cloudflare Workers + edge infrastructure in dreadful-depths \u2014 `workers/dd-cloud/`, `workers/dd-sandbox/`, `workers/dd-workflows/`, `wrangler.toml`, and `scripts/test-endpoints.mjs`. Owns deploy via wrangler, secret hygiene (BIFROST_KV resolution, never local plaintext), endpoint smoke tests, D1/KV bindings, and live-proof verification (`/health.build_commit`). Opens PR for code changes; runs no-PR deploys when asked.\\n\\nTrigger examples:\\n- 'deploy dd-cloud'\\n- 'audit dd-sandbox bindings'\\n- 'add a workflow step in dd-workflows'\\n- 'check wrangler.toml secrets'\\n- 'run test-endpoints.mjs'\\n- 'verify live worker health'\\n- 'wire a new D1 query'\\n- 'sandbox isolation review'\\n- 'check what credentials dd-cloud needs'\\n- 'deploy convergence \u2014 bring all workers current'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "multimedia-rework": [
+      {
+        "slug": "mcp-server-warden",
+        "fqdn": "antigh/multimedia-rework://mcp-server-warden",
+        "description": "Use this agent for the MCP server surface \u2014 mcp_server/ (FastMCP stdio gateway exposing every tool subsystem as MCP tools), bootstrap-fork.sh + preflight-ship.sh (fork harness + shipping gate), and stygian-scrolls registration (CF Worker MCP gateway integration). Owns tool registration, schema validation, stdio transport, and the 22/23-check preflight contract. Runs preflight, opens PR.\\n\\nTrigger examples:\\n- 'register a new MCP tool'\\n- 'debug multimedia-rework-mcp stdio'\\n- 'fix preflight-ship.sh check'\\n- 'investigate stygian-scrolls round-trip'\\n- 'update bootstrap-fork.sh'\\n- 'add an MCP tool schema'\\n- 'audit registered tools table'\\n- 'fix FastMCP server startup'\\n- 'mcp_server tool surface'\\n- 'fork harness regression'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      },
+      {
+        "slug": "svg-rasterizer-warden",
+        "fqdn": "antigh/multimedia-rework://svg-rasterizer-warden",
+        "description": "Use this agent for the SVG/visual rasterization surface \u2014 tools/svg_to_ascii/ (ASCII art, PNG bake, favicon, animated terminal logos) and tools/diagram-forge/ (YAML \u2192 inline SVG via elkjs). Owns shape-match shimmer, live resize, base64 embedding for Tk/HTML, and the diagram-forge TypeScript package. Runs preflight, opens PR.\\n\\nTrigger examples:\\n- 'add a new SVG rasterizer'\\n- 'fix favicon generator'\\n- 'debug ascii shimmer animation'\\n- 'tune diagram-forge layout'\\n- 'port a new diagram theme'\\n- 'investigate logo_preview.py crash'\\n- 'add a shape-match mode'\\n- 'rebuild the multimedia-pipeline example'\\n- 'svg to png base64 embed'\\n- 'elkjs layout debugging'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep"
+        ]
+      }
+    ],
+    "navia-node": [
+      {
+        "slug": "cf-workers-deploy-warden",
+        "fqdn": "antigh/navia-node://cf-workers-deploy-warden",
+        "description": "Use this agent for Cloudflare Workers deployment operations across the navia-node monorepo \u2014 wrangler.toml authoring, R2/D1/DO/Vectorize/Workers AI bindings, Workflows configuration, AI Gateway routing, `wrangler deploy --dry-run` validation in CI, and live `/health.build_commit` verification after merge. Owns the substrate decision from the shape plan: Workers + R2 + Workflows + DO-SQLite + Workers AI + AI Gateway + Vectorize.\\n\\nTrigger examples:\\n- 'scaffold the workers monorepo'\\n- 'add an R2 binding for the readpack bucket'\\n- 'wire the BookGraphDO durable object'\\n- 'deploy navia-forge worker'\\n- 'configure ai gateway for llama 3.3'\\n- 'set up vectorize for term embeddings'\\n- 'wrangler deploy is failing'\\n- 'audit wrangler.toml for cost discipline'\\n- 'add a workflow for chapter-per-step EPUB parse'\\n- 'verify build_commit on the live forge worker'",
+        "model": "claude-sonnet-4-5",
+        "tools": [
+          "Bash",
+          "Read",
+          "Edit",
+          "Write",
+          "Grep",
+          "WebFetch"
+        ]
+      }
+    ]
+  },
+  "fetchedAt": "2026-05-24T05:38:01Z",
+  "count": 21,
+  "project": "erebus-edge",
+  "ownCount": 1,
+  "crossCount": 20
+}
