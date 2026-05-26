@@ -1,13 +1,43 @@
 ---
 name: erebus-installer-warden
-description: "Use this agent for erebus-edge installer development — Bash/.sh and Batch/.bat installer pair maintenance, Cloudflare Tunnel / Zero Trust Access setup, ttyd LaunchDaemon configuration, tsnet Go binary updates, and the corporate-DNS-blocked work-side relay fallback. Enforces installer parity (.sh ↔ .bat), userspace-only invariant on work machines, and per-user temp config isolation. Opens PR against hee-haw.\n\nTrigger examples:\n- 'add a flag to the bootstrap installer'\n- 'fix work_windows.bat relay fallback'\n- 'update the ttyd LaunchDaemon plist'\n- 'patch the cloudflared download URL'\n- 'audit installer parity between .sh and .bat'\n- 'add a CF Access policy step'\n- 'debug the tsnet Go build'\n- 'fix corporate DNS detection'\n- 'rotate scoped CF API token permissions'\n- 'investigate the Python reference wizard'"
+description: 'Use this agent for erebus-edge installer development — Bash/.sh and
+  Batch/.bat installer pair maintenance, Cloudflare Tunnel / Zero Trust Access setup,
+  ttyd LaunchDaemon configuration, tsnet Go binary updates, and the corporate-DNS-blocked
+  work-side relay fallback. Enforces installer parity (.sh ↔ .bat), userspace-only
+  invariant on work machines, and per-user temp config isolation. Opens PR against
+  hee-haw.
+
+
+  Trigger examples:
+
+  - ''add a flag to the bootstrap installer''
+
+  - ''fix work_windows.bat relay fallback''
+
+  - ''update the ttyd LaunchDaemon plist''
+
+  - ''patch the cloudflared download URL''
+
+  - ''audit installer parity between .sh and .bat''
+
+  - ''add a CF Access policy step''
+
+  - ''debug the tsnet Go build''
+
+  - ''fix corporate DNS detection''
+
+  - ''rotate scoped CF API token permissions''
+
+  - ''investigate the Python reference wizard'''
 model: claude-sonnet-4-5
 tools:
-  - Bash
-  - Read
-  - Edit
-  - Write
-  - Grep
+- Bash
+- Read
+- Edit
+- Write
+- Grep
+estimatedTokens: 2000
+dependencies: []
 ---
 
 ## Identity
