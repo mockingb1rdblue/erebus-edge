@@ -154,3 +154,19 @@ npm install
 - Do not force-push or `--no-verify` — let hooks run.
 - The Python code in `src/` is reference, not production, but do not delete
   it without a replacement path for the CF Access flow.
+
+## CI/CD authority (delegated)
+
+CI/CD ordering, deploy webhook routing, and pipeline contract semantics for this
+project defer to the canonical northstar in the bifrost-bridge constitution:
+
+- `bifrost-bridge/docs/constitutions/cicd/constitution.md` § Article I — single-job pipeline (validated artifact → running service)
+- `bifrost-bridge/docs/constitutions/cicd/contract-deploy-lifecycle.md`
+- `bifrost-bridge/docs/constitutions/cicd/contract-deploy-manifest.md`
+
+Live path (W0-E cutover 2026-05-21): GitHub push → `cicd-intake` worker
+(W0-B) → `cicd-queue` worker (W0-C, DO) → ephemeral Sprite per job.
+Verified live 2026-05-27 (see bifrost-bridge `.claude/rules/generated/w1-pilot-gate-e2e-verified-2026-05-27.md`).
+
+Per Axiom 2 (plan is consent) and Axiom 6 (no asking for self-doable work):
+do not ask for HITL on flows this northstar already authorizes.
