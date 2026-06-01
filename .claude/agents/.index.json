@@ -1,0 +1,9 @@
+{
+  "agents": [],
+  "metadata": {
+    "namespace": "erebus-edge",
+    "charon_cicada_onboarded": true,
+    "onboarded_at": "2026-06-01",
+    "classification": "no-deploy"
+  }
+}
