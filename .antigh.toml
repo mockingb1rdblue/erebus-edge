@@ -1,0 +1,30 @@
+# .antigh.toml — workspace metadata for ~/AntiGH/ manifest-driven workspace.
+# Read by ~/.claude/hooks/work-locality-guard.py for write-target enforcement
+# and (future) by a top-level workspace indexer for project graph discovery.
+# Schema source: docs/reports/2026-06-01-iter21/SONAR_PRO_MONOREPO_SCHEMA.md in pro-kit.
+
+[project]
+id = "erebus-edge"
+root = "."
+scratch_dir = "$HOME/AntiGH/.cache/erebus-edge"
+artifacts_dir = "dist"
+languages = ["python", "typescript"]
+repo_type = "git-repo"
+
+[project.paths]
+sources = ["src", "tsnet", "installers"]
+tests = ["test"]
+lint_targets = ["src", "tsnet"]
+config_dirs = [".github", ".claude", "docs", "keys"]
+
+[project.worktrees]
+allowed = ["/Users/mock1ng/AntiGH/erebus-edge"]
+allowed_patterns = ["/Users/mock1ng/AntiGH/erebus-edge-*"]
+
+[dependencies]
+allowed_internal = []
+external_tools = ["wrangler", "gh", "cloudflared"]
+
+[indexing]
+include_in_global_index = true
+tags = ["edge", "cloudflare", "tailscale", "tunnel"]
