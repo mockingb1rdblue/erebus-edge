@@ -33,3 +33,6 @@ tsnet/go.sum
 
 # Claude Code agent workflows
 .agent/
+
+# worktree build dirs (constitution-worktrees.md)
+.worktrees/
