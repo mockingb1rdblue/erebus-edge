@@ -1,0 +1,4 @@
+[edge-pwa-monitor] write failed: ENOENT: no such file or directory, open '/Users/mock1ng/AntiGH/erebus-edge/src/logs/edge-pwa-sessions.log'
+[edge-pwa-monitor] write failed: ENOENT: no such file or directory, open '/Users/mock1ng/AntiGH/erebus-edge/src/logs/edge-pwa-sessions.log'
+[edge-pwa-monitor] parse failed: ENOENT: no such file or directory, open '/Users/mock1ng/AntiGH/erebus-edge/src/logs/edge-pwa-sessions.log'
+[edge-pwa-monitor] write failed: ENOENT: no such file or directory, open '/Users/mock1ng/AntiGH/erebus-edge/src/logs/edge-pwa-sessions.log'
